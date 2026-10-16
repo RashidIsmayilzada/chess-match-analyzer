@@ -10,3 +10,4 @@ data/*.db
 packages/web/dist/
 engines/stockfish
 data/*.log
+data/screenshots/
