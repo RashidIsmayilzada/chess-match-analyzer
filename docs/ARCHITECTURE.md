@@ -142,7 +142,10 @@ Public API, no auth. **Usernames must be lowercased in URLs.** Send a `User-Agen
 ### Analysis queue (`src/queue/`)
 
 One worker, one Stockfish process reused across jobs. Jobs persisted in `jobs`. Progress
-events broadcast over SSE. Position cache: `position_analyses` table keyed by
+events broadcast over SSE. The engine is restarted when enginePath / threads / hashMb change,
+but only between jobs: a running analysis holds a lease on the engine (`EngineManager.lease`)
+and every other `acquire` (e.g. `/api/health`) gets the running engine as-is until the job
+finishes. Position cache: `position_analyses` table keyed by
 (fen, depth, multipv, engine) where depth is the REQUESTED depth. Cancelling a running job
 stops the engine search (`stop`). Running jobs found at boot are re-queued.
 
@@ -165,7 +168,7 @@ stops the engine search (`stop`). Running jobs found at boot are re-queued.
 | DELETE | /settings | | reset overrides to defaults |
 | GET | /openings | `?q=` | `{ eco, name, pgn }[]` (max 200) |
 | GET | /openings/:eco | | lines for that ECO |
-| GET | /health | | `{ ok, engine: string, queueIdle, sseClients }` (starts the engine lazily) |
+| GET | /health | | `{ ok, engine: string, queueIdle, sseClients, engineRestartPending }` (starts the engine lazily; never restarts an engine a running job holds, even if the engine settings changed, so `engineRestartPending` says a restart is due at the next job) |
 
 SSE payloads (`data:` is JSON):
 

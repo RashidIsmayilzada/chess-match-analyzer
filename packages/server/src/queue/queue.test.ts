@@ -168,6 +168,38 @@ describe('analysis jobs', () => {
     expect(FakeEngine.created[1]?.opts.threads).toBe(2);
   });
 
+  it('a settings change plus GET /api/health does not restart the engine under a running job', async () => {
+    await app!.close();
+    app = await createTestApp({ deps: { analyzeGame: fakeAnalyzeGame({ steps: 30, stepMs: 20 }) } });
+    insertGame(app.ctx.database.db, { id: 'busy', profileUsername: 'alice' });
+    insertGame(app.ctx.database.db, { id: 'next', profileUsername: 'alice' });
+
+    const { jobId } = (await app.inject({ method: 'POST', url: '/api/games/busy/analyze' })).json() as { jobId: string };
+    await waitForStatus(jobId, 'running');
+    await waitFor(() => FakeEngine.created.length === 1 && FakeEngine.created[0]?.started);
+
+    await app.inject({ method: 'PUT', url: '/api/settings', payload: { analysis: { threads: 4 } } });
+    const health = await app.inject({ method: 'GET', url: '/api/health' });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({ ok: true, engine: 'FakeFish 1', queueIdle: false, engineRestartPending: true });
+
+    // Still the same engine, still running, and the job finishes normally.
+    expect(FakeEngine.created).toHaveLength(1);
+    expect(FakeEngine.created[0]?.quit).toBe(false);
+    expect(app.ctx.queue.getAnalysisJob(jobId)?.status).toBe('running');
+    const done = await waitForStatus(jobId, 'done');
+    expect(done.error).toBeUndefined();
+    expect(FakeEngine.created[0]?.quit).toBe(false);
+
+    // The next job picks up the new settings.
+    const next = (await app.inject({ method: 'POST', url: '/api/games/next/analyze' })).json() as { jobId: string };
+    await waitForStatus(next.jobId, 'done');
+    expect(FakeEngine.created).toHaveLength(2);
+    expect(FakeEngine.created[0]?.quit).toBe(true);
+    expect(FakeEngine.created[1]?.opts.threads).toBe(4);
+    expect((await app.inject({ method: 'GET', url: '/api/health' })).json()).toMatchObject({ engineRestartPending: false });
+  });
+
   it('re-queues jobs left running by a previous process', async () => {
     await app!.close();
     app = await createTestApp({ startQueue: false });

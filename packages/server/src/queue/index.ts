@@ -19,7 +19,7 @@ import type { EventHub } from '../events.js';
 import { GameRepository } from '../games.js';
 import { ChesscomClient, importChesscomGames, errorMessage, type ImportOptions, type ImportResult } from '../import/chesscom.js';
 import type { SettingsService } from '../settings.js';
-import { EngineManager } from './engine.js';
+import { EngineManager, type EngineLease } from './engine.js';
 import {
   JobStore,
   parsePayload,
@@ -248,7 +248,24 @@ export class JobQueue {
     if (!game) throw new Error(`Game ${gameId} not found`);
     const settings = this.opts.settings.getAnalysis();
     const thresholds = this.opts.settings.getThresholds();
-    const engine = await this.opts.engine.acquire(settings);
+    // Hold the engine for the whole job: a settings change (or /api/health) must not restart it.
+    const lease = await this.opts.engine.lease(settings);
+    try {
+      return await this.analyseWithEngine(row, gameId, game, settings, thresholds, lease.engine, signal);
+    } finally {
+      lease.release();
+    }
+  }
+
+  private async analyseWithEngine(
+    row: JobRow,
+    gameId: string,
+    game: NonNullable<ReturnType<GameRepository['getRow']>>,
+    settings: AnalysisSettings,
+    thresholds: ReturnType<SettingsService['getThresholds']>,
+    engine: EngineLease['engine'],
+    signal: AbortSignal,
+  ): Promise<GameAnalysis> {
     if (signal.aborted) throw new JobCancelledError();
 
     let lastReported = 0;
