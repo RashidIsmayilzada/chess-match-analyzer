@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +12,10 @@ export default defineConfig({
         new URL('../core/src/config/thresholds.ts', import.meta.url),
       ),
     },
+  },
+  test: {
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
   },
   server: {
     port: 5173,

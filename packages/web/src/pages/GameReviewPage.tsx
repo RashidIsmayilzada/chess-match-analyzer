@@ -12,7 +12,16 @@ import { MoveList, type MoveListItem } from '../components/MoveList';
 import { PlayerPanel } from '../components/PlayerPanel';
 import { ClassificationIcon, IconChevron, IconFlip } from '../icons';
 import { CLASSIFICATION_COLORS, classificationPhrase } from '../lib/classification';
-import { parsePgnPlies, pgnHeaders, sanLineToText, START_FEN, uciToKeys, type Ply } from '../lib/chess';
+import {
+  parsePgnPlies,
+  pgnHeaders,
+  plyOffsetFromFen,
+  sanLineToText,
+  START_FEN,
+  turnFromFen,
+  uciToKeys,
+  type Ply,
+} from '../lib/chess';
 import { formatScore } from '../lib/eval';
 
 interface AnalyzeState {
@@ -89,6 +98,8 @@ export function GameReviewPage(): JSX.Element {
   }, [game, analysis]);
 
   const headers = useMemo(() => (game === undefined ? {} : pgnHeaders(game.pgn)), [game]);
+  // Non-zero only for games that start from a FEN (move numbers and the white/black column).
+  const plyOffset = useMemo(() => plyOffsetFromFen(plies[0]?.fenBefore ?? START_FEN), [plies]);
 
   const analysisByPly = useMemo(() => {
     const map = new Map<number, MoveAnalysis>();
@@ -187,6 +198,7 @@ export function GameReviewPage(): JSX.Element {
   const nextAnalysis = analysisByPly.get(currentPly + 1);
 
   const fen = currentMove?.fenAfter ?? plies[0]?.fenBefore ?? START_FEN;
+  const sideToMove = turnFromFen(fen);
   const lastMove = currentMove !== undefined ? uciToKeys(currentMove.uci) : undefined;
 
   const score: EngineScore | undefined =
@@ -239,8 +251,11 @@ export function GameReviewPage(): JSX.Element {
     return <div className="empty">Loading game…</div>;
   }
 
-  const openingName = analysis?.opening.name ?? game.openingName ?? headers.Opening;
-  const eco = analysis?.opening.eco ?? game.eco ?? headers.ECO;
+  // Core reports { eco: '', name: 'Unknown' } when no book line matched; fall back to what
+  // chess.com said about the opening in that case.
+  const bookName = analysis?.opening.name;
+  const openingName = bookName !== undefined && bookName !== '' && bookName !== 'Unknown' ? bookName : (game.openingName ?? headers.Opening);
+  const eco = analysis?.opening.eco || game.eco || headers.ECO;
   const whiteRating = game.white.rating > 0 ? game.white.rating : undefined;
   const blackRating = game.black.rating > 0 ? game.black.rating : undefined;
   const topColor: Color = orientation === 'w' ? 'b' : 'w';
@@ -253,8 +268,8 @@ export function GameReviewPage(): JSX.Element {
     currentAnalysis === undefined
       ? undefined
       : playedIsBest
-        ? `Best line: ${sanLineToText(currentAnalysis.bestLine, currentPly)}`
-        : `Best was ${currentAnalysis.bestMove.san}: ${sanLineToText(currentAnalysis.bestLine, currentPly)}`;
+        ? `Best line: ${sanLineToText(currentAnalysis.bestLine, currentPly, plyOffset)}`
+        : `Best was ${currentAnalysis.bestMove.san}: ${sanLineToText(currentAnalysis.bestLine, currentPly, plyOffset)}`;
 
   return (
     <div>
@@ -284,14 +299,14 @@ export function GameReviewPage(): JSX.Element {
       <div className="review">
         <div>
           <div className="board-wrap">
-            <EvalBar score={score} orientation={orientation} />
+            <EvalBar score={score} orientation={orientation} sideToMove={sideToMove} />
             <div className="board-column">
               <div className="small muted inline" style={{ justifyContent: 'space-between' }}>
                 <span>
                   <span className={`color-swatch ${topColor}`} /> {playerFor(topColor).username}{' '}
                   {ratingFor(topColor) !== undefined && `(${ratingFor(topColor)})`}
                 </span>
-                {score !== undefined && <span className="mono">{formatScore(score)}</span>}
+                {score !== undefined && <span className="mono">{formatScore(score, sideToMove)}</span>}
               </div>
               <Board fen={fen} orientation={orientation} lastMove={lastMove} arrows={arrows} />
               <div className="small muted inline" style={{ justifyContent: 'space-between' }}>
@@ -335,6 +350,7 @@ export function GameReviewPage(): JSX.Element {
                 keyMoments={analysis.keyMoments}
                 currentPly={currentPly}
                 onSelectPly={goTo}
+                plyOffset={plyOffset}
               />
             </div>
           )}
@@ -406,7 +422,7 @@ export function GameReviewPage(): JSX.Element {
                 {bestWas !== undefined && <div className="best-line mono small muted">{bestWas}</div>}
                 {currentAnalysis === undefined && nextAnalysis !== undefined && (
                   <div className="best-line mono small muted">
-                    Best: {sanLineToText(nextAnalysis.bestLine, currentPly + 1)}
+                    Best: {sanLineToText(nextAnalysis.bestLine, currentPly + 1, plyOffset)}
                   </div>
                 )}
                 <div className="inline small dim" style={{ justifyContent: 'space-between' }}>
@@ -437,13 +453,13 @@ export function GameReviewPage(): JSX.Element {
           </div>
 
           <div className="card" style={{ padding: 8 }}>
-            <MoveList moves={moveListItems} currentPly={currentPly} onSelectPly={goTo} />
+            <MoveList moves={moveListItems} currentPly={currentPly} onSelectPly={goTo} plyOffset={plyOffset} />
           </div>
 
           {analysis !== undefined && (
             <div className="card">
               <h3>Key moments</h3>
-              <KeyMoments moves={analysis.moves} keyMoments={analysis.keyMoments} onSelectPly={goTo} />
+              <KeyMoments moves={analysis.moves} keyMoments={analysis.keyMoments} onSelectPly={goTo} plyOffset={plyOffset} />
             </div>
           )}
 

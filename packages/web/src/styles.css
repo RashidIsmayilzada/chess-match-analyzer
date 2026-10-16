@@ -569,14 +569,16 @@ table.table td.num {
   display: flex;
   flex-direction: column;
 }
-.eval-bar .black {
-  background: #403d39;
+.eval-bar .black,
+.eval-bar .white {
   flex: none;
   transition: height 0.3s ease;
 }
+.eval-bar .black {
+  background: #403d39;
+}
 .eval-bar .white {
   background: #f0ede8;
-  flex: 1;
 }
 .eval-bar .label {
   position: absolute;

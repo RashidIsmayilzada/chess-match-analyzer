@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "build": "npm run build -w packages/core && npm run build -w packages/server && npm run build -w packages/web",
-    "test": "npm run test -w packages/core && npm run test -w packages/server --if-present",
+    "test": "npm run test -w packages/core && npm run test -w packages/server --if-present && npm run test -w packages/web --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev": "npm run dev -w packages/server & npm run dev -w packages/web & wait",
     "dev:server": "npm run dev -w packages/server",

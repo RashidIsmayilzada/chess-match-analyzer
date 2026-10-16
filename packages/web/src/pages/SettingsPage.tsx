@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react';
 import type { AnalysisSettings, Thresholds } from '@chess-analyzer/core';
 import { DEFAULT_THRESHOLDS } from '@chess-analyzer/core/thresholds';
-import { api, errorMessage } from '../api/client';
+import { api, errorMessage, type SettingsUpdate } from '../api/client';
 
 const DEPTH_PRESETS = [18, 20, 24] as const;
 
@@ -32,16 +32,24 @@ function intField(value: string, name: string, min: number, max: number): number
   return n;
 }
 
-function fromForm(f: FormState): AnalysisSettings {
-  const out: AnalysisSettings = {
+/** Every analysis field, as the server expects it. */
+type AnalysisPatch = Omit<AnalysisSettings, 'movetimeMs'> & { movetimeMs: number | null };
+
+/**
+ * Form -> PUT body. The server merges patches deeply and only `null` removes a key, so an empty
+ * movetime field must be sent as `movetimeMs: null` or a previously saved movetime would stick
+ * (and keep overriding the depth).
+ */
+function fromForm(f: FormState): AnalysisPatch {
+  const out: AnalysisPatch = {
     depth: intField(f.depth, 'Depth', 1, 99),
     multiPv: intField(f.multiPv, 'MultiPV', 1, 10),
     threads: intField(f.threads, 'Threads', 1, 256),
     hashMb: intField(f.hashMb, 'Hash', 1, 65536),
     enginePath: f.enginePath.trim(),
+    movetimeMs: f.movetimeMs.trim() === '' ? null : intField(f.movetimeMs, 'Movetime', 1, 600000),
   };
   if (out.enginePath === '') throw new Error('Engine path is required');
-  if (f.movetimeMs.trim() !== '') out.movetimeMs = intField(f.movetimeMs, 'Movetime', 1, 600000);
   return out;
 }
 
@@ -142,7 +150,7 @@ export function SettingsPage(): JSX.Element {
     if (form === undefined) return;
     setSaveError(undefined);
     setSaved(false);
-    let analysis: AnalysisSettings;
+    let analysis: NonNullable<SettingsUpdate['analysis']>;
     try {
       analysis = fromForm(form);
     } catch (err) {

@@ -104,8 +104,9 @@ export interface SettingsResponse {
   thresholds: Thresholds;
 }
 
+/** Deep-partial PUT /settings body. `movetimeMs: null` clears a previously set movetime. */
 export interface SettingsUpdate {
-  analysis?: Partial<AnalysisSettings>;
+  analysis?: Partial<Omit<AnalysisSettings, 'movetimeMs'>> & { movetimeMs?: number | null };
   thresholds?: Thresholds;
 }
 
