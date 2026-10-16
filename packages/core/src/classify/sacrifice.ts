@@ -10,7 +10,11 @@
  *    run a static exchange evaluation (SEE) on that square with the opponent capturing first.
  *    `max(0, SEE)` is how much the opponent could win there. This is the "hanging before" map.
  * 2. Make the move (chess.js validates legality). Repeat step 1 on the new position: the
- *    "hanging after" map.
+ *    "hanging after" map. Here the opponent is to move, so only squares on which the opponent has
+ *    a LEGAL capture count: after a check the opponent must deal with the check first (a piece
+ *    that is merely attacked is not en prise), and a piece attacked only by a pinned piece is
+ *    not en prise either. After a checkmating move the opponent has no legal moves, so the plain
+ *    attack-based map is used there: the material offered by a mating move still counts.
  * 3. For each square hanging after the move, subtract what was already hanging on it before
  *    (for the piece that moved, subtract what was hanging on its origin square): material that was
  *    en prise before and is still en prise is not a new sacrifice. Only positive remainders count,
@@ -99,13 +103,35 @@ export function staticExchangeEvaluation(chess: Chess, square: Square, attacker:
   return gain[0] as number;
 }
 
-/** Material of `color` that the other side can win by capturing, per square (kings excluded). */
-function hangingMaterial(chess: Chess, color: Color): Map<Square, number> {
+/**
+ * Squares on which the side to move has a legal capture. An en passant capture is mapped to the
+ * square of the pawn it takes.
+ */
+export function legalCaptureSquares(chess: Chess): Set<Square> {
+  const squares = new Set<Square>();
+  for (const move of chess.moves({ verbose: true })) {
+    if (!move.captured) continue;
+    if (move.flags.includes('e')) {
+      const rank = Number(move.to[1]) + (move.color === 'w' ? -1 : 1);
+      squares.add(`${move.to[0]}${rank}` as Square);
+    } else {
+      squares.add(move.to);
+    }
+  }
+  return squares;
+}
+
+/**
+ * Material of `color` that the other side can win by capturing, per square (kings excluded).
+ * When `capturable` is given (the other side is to move), only those squares are considered.
+ */
+function hangingMaterial(chess: Chess, color: Color, capturable?: ReadonlySet<Square>): Map<Square, number> {
   const result = new Map<Square, number>();
   const enemy = otherColor(color);
   for (const rank of chess.board()) {
     for (const cell of rank) {
       if (!cell || cell.color !== color || cell.type === 'k') continue;
+      if (capturable && !capturable.has(cell.square)) continue;
       if (chess.attackers(cell.square, enemy).length === 0) continue;
       const loss = staticExchangeEvaluation(chess, cell.square, enemy);
       if (loss > 0) result.set(cell.square, loss);
@@ -128,7 +154,11 @@ export function detectSacrifice(fenBefore: string, uci: string): SacrificeResult
   const before = hangingMaterial(chess, mover);
   // Throws on an illegal move; that is a caller bug and must not be silently classified.
   const move = chess.move({ from, to, promotion });
-  const after = hangingMaterial(chess, mover);
+  // The opponent is to move now: only what they can legally take is en prise. After a delivered
+  // checkmate they have no moves at all; the material the move offered still counts (a mating
+  // queen sacrifice stays a sacrifice, and `brilliant.excludeMateInOne` decides what to do with it).
+  const capturable = chess.isCheckmate() ? undefined : legalCaptureSquares(chess);
+  const after = hangingMaterial(chess, mover, capturable);
 
   let value = 0;
   const squares: string[] = [];

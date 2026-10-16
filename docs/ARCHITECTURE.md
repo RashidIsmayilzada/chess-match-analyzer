@@ -33,12 +33,12 @@ Entry: `src/index.ts` re-exports everything public.
 | thresholds | `src/config/thresholds.ts` | Every tunable constant. `DEFAULT_THRESHOLDS`, `PIECE_VALUES`. |
 | engine | `src/engine/uci.ts` | `UciEngine` class: spawn a UCI binary, set options, `analyse(fen, settings) => PositionAnalysis`. Scores normalised to white POV. Serialises concurrent calls (one search at a time). Terminal positions (checkmate / stalemate) return `lines: []`. `PositionAnalysis.depth` is the depth actually reached. |
 | openings | `src/openings/index.ts` | `OpeningBook`: loads the TSVs, `lookupByMoves(sanMoves[]) => OpeningRef | undefined`, `isBookMove(sanMovesSoFar, san)`, `longestMatch(sanMoves[]) => { opening, plies }`, `search(query)` and `list()` for the Openings browser. Also `loadDefaultBook(dataDir)`. |
-| winprob | `src/classify/winprob.ts` | `cpToWinProb(cp, k)`, `scoreToWinProb(score: EngineScore, color: Color, t)` (mover POV), `scoreToCp(score, mateCp)`, `scoreFromMoverPov`. |
-| sacrifice | `src/classify/sacrifice.ts` | `detectSacrifice(fenBefore, uci) => { isSacrifice, value }`: net material the mover leaves en prise after the move that cannot be recouped by a simple recapture (SEE-style). |
+| winprob | `src/classify/winprob.ts` | `cpToWinProb(cp, k)`, `scoreToWinProb(score: EngineScore, color: Color, t, sideToMove?)` (mover POV), `scoreToCp(score, mateCp)`, `positionScoreToCp(score, sideToMove, mateCp)`, `isMateZero`, `scoreFromMoverPov`. `mate 0` means "the side to move is checkmated" and carries no sign, so it can only be converted together with the side to move: `scoreToCp` throws on it, `positionScoreToCp` / `scoreToWinProb(..., sideToMove)` resolve it. |
+| sacrifice | `src/classify/sacrifice.ts` | `detectSacrifice(fenBefore, uci) => { isSacrifice, value }`: net material the mover leaves en prise after the move that cannot be recouped by a simple recapture (SEE-style). "En prise" means the opponent can LEGALLY capture it on their next move: after a check only check-escaping captures count, pinned attackers do not count. After a checkmating move (no legal replies) the attack-based notion is used so a mating sacrifice is still a sacrifice. |
 | classify | `src/classify/index.ts` | `classifyMove(ctx: MoveContext, t: Thresholds) => Classification` plus helpers per rule (`isBrilliant`, `isGreat`, `isMiss`, `bandFor`). |
 | accuracy | `src/classify/accuracy.ts` | `moveAccuracy(winProbLoss, t)`, `gameAccuracy(moves, color, t)`, `estimateRating(avgCpLoss, timeClass, t)`. |
 | pgn | `src/pgn/index.ts` | `parsePgn(pgn) => { headers, moves: {san, uci, fenBefore, fenAfter, clockSeconds?}[] }` using chess.js. Handles chess.com `{[%clk ...]}` comments. |
-| analyze | `src/analyze/index.ts` | `analyzeGame({ pgn, timeClass, engine, book, settings, thresholds, onProgress }) => GameAnalysis`. Orchestrates: parse → analyse every position (with a `PositionCache` interface for memoisation) → classify → summarise → key moments. Engine results are normalised to the REQUESTED depth before caching (`cache.get` is keyed by the requested settings). Positions with exactly one legal move are never sent to the engine (Stockfish answers them with a meaningless `cp 0`): their eval is derived from the position after the forced move (`deriveForcedMoveAnalysis`). |
+| analyze | `src/analyze/index.ts` | `analyzeGame({ pgn, timeClass, engine, book, settings, thresholds, onProgress }) => GameAnalysis`. Orchestrates: parse → analyse every position (with a `PositionCache` interface for memoisation) → classify → summarise → key moments. Engine results are normalised to the REQUESTED depth before caching (`cache.get` is keyed by the requested settings). Positions with exactly one legal move are never sent to the engine (Stockfish answers them with a meaningless `cp 0`): their eval is derived from the position after the forced move (`deriveForcedMoveAnalysis`). Terminal positions (engine returns `lines: []`) get `evalBefore`/`evalAfter` from `terminalScore`: checkmate is `{ type: 'mate', value: 0 }` (the side to move is mated), every other game end is `cp 0`; a cp value never stands in for a mate. `opening.lastBookPly` is the ply of the last move classified `book`; `opening.eco`/`name` come from the longest named line that is a prefix of the game, which may be shorter (e.g. 1.d4 Nf6 2.Nc3 is book because named A45 lines continue from it, while the name is the 2-ply "Indian Defense"). |
 
 `MoveContext` (input to `classifyMove`):
 
@@ -59,7 +59,8 @@ interface MoveContext {
 Order of evaluation: **book → brilliant → great → miss → bands**.
 
 1. **book** — `isBook` is true. Book moves stop at the first non-book move: once a move is
-   out of book, no later move is book.
+   out of book, no later move is book. A move is book when the moves so far plus this move are a
+   prefix of at least one line in the dataset (so book can extend past the last *named* line).
 2. Compute `winProbBefore` = mover's win prob of best line in `position` (i.e. the eval of the
    position before the move), `winProbAfter` = mover's win prob of best line in `positionAfter`,
    `loss = max(0, winProbBefore - winProbAfter)`.

@@ -27,6 +27,7 @@ import {
   isAnalysisAbortError,
   selectKeyMoments,
   settingsKey,
+  terminalScore,
   type AnalyzeGameOptions,
   type PositionCache,
 } from './index.js';
@@ -302,6 +303,25 @@ describe('analyzeGame moves', () => {
     expect(result.moves[3]!.opening).toBeUndefined();
   });
 
+  it('lastBookPly is the last book move even when it runs past the longest named line', async () => {
+    // 1.d4 Nf6 2.Nc3 is a prefix of several A45 lines, so Nc3 is a book move, but the longest line
+    // that is exactly a prefix of the game is the 2-ply "Indian Defense".
+    const book: FakeBook = {
+      isBookMove: vi.fn((soFar: string[]) => soFar.length < 3),
+      longestMatch: vi.fn((sans: string[]) =>
+        sans.length >= 2 ? { opening: { eco: 'A45', name: 'Indian Defense' }, plies: 2 } : undefined,
+      ),
+    };
+    parsePgnMock.mockReturnValue(makeGame(['d4', 'Nf6', 'Nc3', 'd6']));
+
+    const result = await analyzeGame(baseOptions({ book: book as unknown as OpeningBook }));
+
+    expect(result.moves.map((m) => m.classification)).toEqual(['book', 'book', 'book', 'best']);
+    expect(result.opening).toEqual({ eco: 'A45', name: 'Indian Defense', lastBookPly: 3 });
+    expect(result.white.counts.book + result.black.counts.book).toBe(result.opening.lastBookPly);
+    expect(result.moves[2]!.opening).toEqual({ eco: 'A45', name: 'Indian Defense' });
+  });
+
   it('falls back to an Unknown opening when nothing matches', async () => {
     const book: FakeBook = {
       isBookMove: vi.fn(() => false),
@@ -416,7 +436,7 @@ describe('analyzeGame moves', () => {
     expect(result.moves[0]!.bestLine).toEqual(['e4', 'e5']);
   });
 
-  it('uses a terminal fallback eval when the engine returns no lines for a mated position', async () => {
+  it('expresses a delivered checkmate as "mate 0" when the engine returns no lines', async () => {
     const mate = makeGame(['f3', 'e5', 'g4', 'Qh4#']);
     parsePgnMock.mockReturnValue(mate);
     const mated = mate.moves[3]!.fenAfter;
@@ -425,7 +445,14 @@ describe('analyzeGame moves', () => {
     });
 
     const result = await analyzeGame(baseOptions({ engine: engine as unknown as UciEngine }));
-    expect(result.moves[3]!.evalAfter).toEqual({ type: 'cp', value: -DEFAULT_THRESHOLDS.winProb.mateCp });
+    // mate 0: the side to move (white) is checkmated. Never a cp score pretending to be an eval.
+    expect(result.moves[3]!.evalAfter).toEqual({ type: 'mate', value: 0 });
+    expect(JSON.parse(JSON.stringify(result.moves[3]!.evalAfter))).toEqual({ type: 'mate', value: 0 });
+  });
+
+  it('terminalScore: checkmate is mate 0, stalemate is cp 0', () => {
+    expect(terminalScore('rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3')).toEqual({ type: 'mate', value: 0 });
+    expect(terminalScore('7k/5Q2/6K1/8/8/8/8/8 b - - 0 1')).toEqual({ type: 'cp', value: 0 });
   });
 });
 

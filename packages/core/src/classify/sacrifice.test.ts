@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { detectSacrifice } from './sacrifice.js';
+import { Chess } from 'chess.js';
+import { detectSacrifice, legalCaptureSquares } from './sacrifice.js';
 
 describe('detectSacrifice', () => {
   it('queen moved en prise to an undefended square: value 9', () => {
@@ -103,6 +104,37 @@ describe('detectSacrifice', () => {
     const r = detectSacrifice('6k1/5ppp/5n2/8/8/3P4/5PPP/6K1 b - - 0 1', 'f6e4');
     expect(r.value).toBe(3);
     expect(r.squares).toEqual(['e4']);
+  });
+
+  it('a queen trade with check is not a sacrifice: the opponent must answer the check, not grab a pawn', () => {
+    // game1 ply 28: 14...Qxd2+ (Rxd2 follows). The c7 pawn is attacked by Be5 and loses its
+    // defender (the queen), but White is in check and cannot take it.
+    const r = detectSacrifice('1r1q1rk1/p1p2pbp/b1p3p1/2n1B3/4P3/2N2N2/PPPQ1PPP/2KR3R b - - 0 14', 'd8d2');
+    expect(r.value).toBe(0);
+    expect(r.isSacrifice).toBe(false);
+    expect(r.squares).toEqual([]);
+  });
+
+  it('a non-capturing check that stops defending a piece does not count that piece as en prise', () => {
+    // Qc3 defends Nd4 against Bb6. Qc8+ leaves the knight "attacked", but Black's only legal
+    // reply is Kh7, so nothing can be taken this move.
+    const r = detectSacrifice('6k1/5pp1/1b5p/8/3N4/2Q5/5PPP/6K1 w - - 0 1', 'c3c8');
+    expect(r.value).toBe(0);
+    expect(r.isSacrifice).toBe(false);
+  });
+
+  it('a piece attacked only by a pinned piece is not en prise', () => {
+    // Black's Bb4 is pinned to Ke7 by Re1... moving Nc3-d5 "attacked" by the pinned bishop.
+    // Re1 pins Bb4? No: the pin is on the e-file. Use: Black Bb4 pinned along the a3-f8 diagonal
+    // by Ba3 to Kf8; White Nc3-d5 is attacked by Bb4 but Bxd5 is illegal.
+    const r = detectSacrifice('5k2/8/8/8/1b6/B1N5/8/6K1 w - - 0 1', 'c3d5');
+    expect(r.value).toBe(0);
+    expect(r.isSacrifice).toBe(false);
+  });
+
+  it('legalCaptureSquares maps en passant to the captured pawn', () => {
+    const chess = new Chess('4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2');
+    expect([...legalCaptureSquares(chess)]).toEqual(['d5']);
   });
 
   it('throws on an illegal move', () => {

@@ -79,9 +79,8 @@ function resolveCpAfter(ctx: MoveContext, cpBefore: number, mateCp: number): { c
     const board = new Chess(ctx.fenAfter);
     if (board.isCheckmate()) return { cpAfter: mateCp, deliversMate: true };
     if (board.isDraw()) return { cpAfter: 0, deliversMate: false };
-  }
-  if (!line) {
-    // No engine output and the game goes on: no information, so assume nothing was lost.
+    // No engine output (or a "mate 0" that the board does not confirm) and the game goes on:
+    // no information, so assume nothing was lost.
     return { cpAfter: cpBefore, deliversMate: false };
   }
   return { cpAfter: scoreToCp(scoreFromPov(line.score, ctx.color), mateCp), deliversMate: false };

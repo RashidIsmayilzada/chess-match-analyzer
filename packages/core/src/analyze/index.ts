@@ -196,19 +196,18 @@ export function deriveForcedMoveAnalysis(fen: string, forced: ForcedMove, after:
 const MAX_FORCED_CHAIN = 32;
 
 /**
- * Score used when the engine returned no lines for a position (e.g. a terminal position).
- * Checkmate is expressed as +-mateCp (white POV); any other terminal state is a draw.
+ * Score used when the engine returned no lines for a position (a terminal position).
+ * Checkmate is `mate 0` (the side to move is checkmated, see `EngineScore`); any other terminal
+ * state (stalemate, dead position, repetition, fifty moves) is a draw.
  */
-function fallbackScore(fen: string, t: Thresholds): EngineScore {
+export function terminalScore(fen: string): EngineScore {
   const chess = new Chess(fen);
-  if (chess.isCheckmate()) {
-    return { type: 'cp', value: chess.turn() === 'w' ? -t.winProb.mateCp : t.winProb.mateCp };
-  }
+  if (chess.isCheckmate()) return { type: 'mate', value: 0 };
   return { type: 'cp', value: 0 };
 }
 
-function evalOf(analysis: PositionAnalysis, t: Thresholds): EngineScore {
-  return analysis.lines[0]?.score ?? fallbackScore(analysis.fen, t);
+function evalOf(analysis: PositionAnalysis): EngineScore {
+  return analysis.lines[0]?.score ?? terminalScore(analysis.fen);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +330,6 @@ function buildMoveAnalysis(
   detail: ClassificationDetail,
   isBook: boolean,
   opening: OpeningRef | undefined,
-  t: Thresholds,
 ): MoveAnalysis {
   const best = position.lines[0];
   const second = position.lines[1];
@@ -345,8 +343,8 @@ function buildMoveAnalysis(
     uci: move.uci,
     fenBefore: move.fenBefore,
     fenAfter: move.fenAfter,
-    evalBefore: evalOf(position, t),
-    evalAfter: evalOf(positionAfter, t),
+    evalBefore: evalOf(position),
+    evalAfter: evalOf(positionAfter),
     winProbBefore: detail.winProbBefore,
     winProbAfter: detail.winProbAfter,
     winProbLoss: detail.winProbLoss,
@@ -372,6 +370,7 @@ function walkMoves(
   const moves: MoveAnalysis[] = [];
   const sans: string[] = [];
   let inBook = true;
+  let lastBookPly = 0;
   let previous: MoveContext['previous'];
 
   for (const move of game.moves) {
@@ -384,7 +383,8 @@ function walkMoves(
     // Book moves stop at the first non-book move: once out of book, never back in.
     // Snapshots are handed to the book so a retained reference never sees later moves.
     const isBook = inBook && book.isBookMove([...sans], move.san);
-    if (!isBook) inBook = false;
+    if (isBook) lastBookPly = move.ply;
+    else inBook = false;
     sans.push(move.san);
     const opening = isBook ? book.longestMatch([...sans])?.opening : undefined;
 
@@ -403,7 +403,7 @@ function walkMoves(
     if (previous) ctx.previous = previous;
 
     const detail = classifyMove(ctx, t);
-    moves.push(buildMoveAnalysis(move, position, positionAfter, detail, isBook, opening, t));
+    moves.push(buildMoveAnalysis(move, position, positionAfter, detail, isBook, opening));
     previous = {
       winProbLoss: detail.winProbLoss,
       winProbBefore: detail.winProbBefore,
@@ -411,10 +411,13 @@ function walkMoves(
     };
   }
 
+  // Name and ECO come from the longest NAMED line the game follows; `lastBookPly` is the ply of
+  // the last move classified as book, which can run past that line (the book knows prefixes of
+  // longer lines whose own name only applies once they are complete).
   const match = book.longestMatch([...sans]);
   const opening: GameAnalysis['opening'] = match
-    ? { eco: match.opening.eco, name: match.opening.name, lastBookPly: match.plies }
-    : { ...UNKNOWN_OPENING, lastBookPly: 0 };
+    ? { eco: match.opening.eco, name: match.opening.name, lastBookPly }
+    : { ...UNKNOWN_OPENING, lastBookPly };
 
   return { moves, opening };
 }

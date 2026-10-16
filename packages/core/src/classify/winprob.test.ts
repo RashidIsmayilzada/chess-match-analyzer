@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_THRESHOLDS } from '../config/thresholds.js';
-import { cpToWinProb, scoreFromMoverPov, scoreFromPov, scoreToCp, scoreToWinProb } from './winprob.js';
+import { cpToWinProb, isMateZero, positionScoreToCp, scoreFromMoverPov, scoreFromPov, scoreToCp, scoreToWinProb } from './winprob.js';
 
 const t = DEFAULT_THRESHOLDS;
 const k = t.winProb.k;
@@ -68,10 +68,27 @@ describe('scoreToCp', () => {
     expect(scoreToCp({ type: 'mate', value: 99 }, mateCp)).toBeGreaterThan(scoreToCp({ type: 'cp', value: 5000 }, mateCp));
   });
 
-  it('treats mate 0 as a delivered mate (side to move is checkmated) in white POV', () => {
-    // "mate 0" is sign-ambiguous: +0 = the side to move (black, if white just mated) is mated.
-    expect(scoreToCp({ type: 'mate', value: 0 }, mateCp)).toBe(mateCp);
-    expect(scoreToCp({ type: 'mate', value: -0 }, mateCp)).toBe(-mateCp);
+  it('refuses "mate 0": a zero has no sign, so the winner is unknown without the side to move', () => {
+    expect(() => scoreToCp({ type: 'mate', value: 0 }, mateCp)).toThrow(RangeError);
+    expect(() => scoreToCp({ type: 'mate', value: -0 }, mateCp)).toThrow(RangeError);
+  });
+});
+
+describe('positionScoreToCp', () => {
+  it('resolves mate 0 with the side to move: the side to move is the mated side', () => {
+    expect(positionScoreToCp({ type: 'mate', value: 0 }, 'w', mateCp)).toBe(-mateCp);
+    expect(positionScoreToCp({ type: 'mate', value: 0 }, 'b', mateCp)).toBe(mateCp);
+  });
+
+  it('otherwise behaves like scoreToCp', () => {
+    expect(positionScoreToCp({ type: 'cp', value: -37 }, 'w', mateCp)).toBe(-37);
+    expect(positionScoreToCp({ type: 'mate', value: -2 }, 'b', mateCp)).toBe(-(mateCp - 2));
+  });
+
+  it('isMateZero only matches mate 0', () => {
+    expect(isMateZero({ type: 'mate', value: 0 })).toBe(true);
+    expect(isMateZero({ type: 'mate', value: 1 })).toBe(false);
+    expect(isMateZero({ type: 'cp', value: 0 })).toBe(false);
   });
 });
 
@@ -90,6 +107,22 @@ describe('scoreToWinProb', () => {
     expect(scoreToWinProb({ type: 'mate', value: 2 }, 'b', t)).toBeLessThan(0.001);
     expect(scoreToWinProb({ type: 'mate', value: -2 }, 'b', t)).toBeGreaterThan(0.999);
     expect(scoreToWinProb({ type: 'mate', value: -2 }, 'w', t)).toBeLessThan(0.001);
+  });
+
+  it('mate 0: the side to move is mated, the other side has won', () => {
+    const mated = { type: 'mate' as const, value: 0 };
+    // White delivered mate: black is to move and is checkmated.
+    expect(scoreToWinProb(mated, 'w', t, 'b')).toBeGreaterThan(0.999);
+    expect(scoreToWinProb(mated, 'b', t, 'b')).toBeLessThan(0.001);
+    // Black delivered mate: white is to move and is checkmated.
+    expect(scoreToWinProb(mated, 'w', t, 'w')).toBeLessThan(0.001);
+    expect(scoreToWinProb(mated, 'b', t, 'w')).toBeGreaterThan(0.999);
+    // JSON round-trips lose the sign of -0, so it must not carry meaning.
+    expect(scoreToWinProb({ type: 'mate', value: -0 }, 'b', t, 'b')).toBeLessThan(0.001);
+  });
+
+  it('mate 0 without the side to move throws instead of guessing', () => {
+    expect(() => scoreToWinProb({ type: 'mate', value: 0 }, 'b', t)).toThrow(RangeError);
   });
 
   it('equals cpToWinProb(scoreToCp(scoreFromPov(...)))', () => {

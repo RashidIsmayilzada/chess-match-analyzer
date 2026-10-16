@@ -37,7 +37,14 @@ export const ALL_CLASSIFICATIONS: readonly Classification[] = [
   'blunder',
 ];
 
-/** Engine score. `cp` is centipawns, `mate` is moves-to-mate (negative = getting mated). White POV. */
+/**
+ * Engine score. `cp` is centipawns, `mate` is moves-to-mate (negative = getting mated). White POV.
+ *
+ * `mate 0` means the side to move has been checkmated. A zero carries no sign, so the winner is
+ * not part of the score: it is whoever is NOT to move in that position (derive it from the FEN;
+ * core's `positionScoreToCp` / `scoreToWinProb(..., sideToMove)` take it). `MoveAnalysis.evalAfter`
+ * is `mate 0` after a mating move. A cp score is never used to stand in for a mate.
+ */
 export interface EngineScore {
   type: 'cp' | 'mate';
   value: number;
