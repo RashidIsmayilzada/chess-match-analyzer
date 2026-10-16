@@ -69,13 +69,16 @@ export const positionAnalyses = sqliteTable(
   'position_analyses',
   {
     fen: text('fen').notNull(),
+    /** REQUESTED depth (what the settings asked for), not the depth the engine reached. */
     depth: integer('depth').notNull(),
     multipv: integer('multipv').notNull(),
     engine: text('engine').notNull(),
+    /** Requested movetime in ms; 0 for a depth-limited search. */
+    movetimeMs: integer('movetime_ms').notNull().default(0),
     linesJson: text('lines_json').notNull(),
     createdAt: text('created_at').notNull(),
   },
-  (t) => [primaryKey({ columns: [t.fen, t.depth, t.multipv, t.engine] })],
+  (t) => [primaryKey({ columns: [t.fen, t.depth, t.multipv, t.engine, t.movetimeMs] })],
 );
 
 export const gameAnalyses = sqliteTable(

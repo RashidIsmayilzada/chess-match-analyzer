@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { migrate } from './migrate.js';
+import { hasColumn, migrate } from './migrate.js';
 
 describe('migrate', () => {
   it('backfills game_profiles for databases created before the link table existed', () => {
@@ -22,6 +22,28 @@ describe('migrate', () => {
     migrate(sqlite); // idempotent
     const links = sqlite.prepare('SELECT game_id, profile_username, imported_at FROM game_profiles').all();
     expect(links).toEqual([{ game_id: 'g1', profile_username: 'alice', imported_at: 't1' }]);
+    sqlite.close();
+  });
+
+  it('rebuilds position_analyses with movetime_ms in the primary key, keeping old rows as movetime 0', () => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE position_analyses (
+        fen TEXT NOT NULL, depth INTEGER NOT NULL, multipv INTEGER NOT NULL, engine TEXT NOT NULL,
+        lines_json TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (fen, depth, multipv, engine)
+      );
+      INSERT INTO position_analyses VALUES ('f', 18, 3, 'SF', '[]', 't0');
+    `);
+    expect(hasColumn(sqlite, 'position_analyses', 'movetime_ms')).toBe(false);
+    migrate(sqlite);
+    migrate(sqlite); // idempotent
+    expect(hasColumn(sqlite, 'position_analyses', 'movetime_ms')).toBe(true);
+    expect(sqlite.prepare('SELECT fen, depth, movetime_ms FROM position_analyses').all()).toEqual([{ fen: 'f', depth: 18, movetime_ms: 0 }]);
+    // Same fen/depth/multipv/engine under a different movetime is a distinct row.
+    sqlite.prepare("INSERT INTO position_analyses VALUES ('f', 18, 3, 'SF', 200, '[]', 't1')").run();
+    expect(sqlite.prepare('SELECT count(*) AS n FROM position_analyses').get()).toEqual({ n: 2 });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'position_analyses_old'").get()).toBeUndefined();
     sqlite.close();
   });
 });

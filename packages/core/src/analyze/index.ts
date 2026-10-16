@@ -32,10 +32,15 @@ import {
   type MoveContext,
 } from '../classify/index.js';
 
-/** Memoisation of engine results, e.g. backed by SQLite in the server. */
+/**
+ * Memoisation of engine results, e.g. backed by SQLite in the server. Entries are keyed by the
+ * REQUESTED search settings: fen, depth, multiPv, engine name and movetime (`movetimeMs`, 0 when
+ * the search was depth-limited). A time-limited search reaches an arbitrary depth, so it must
+ * never be served as a fixed-depth result or vice versa.
+ */
 export interface PositionCache {
-  get(fen: string, depth: number, multiPv: number, engine: string): Promise<PositionAnalysis | undefined>;
-  set(analysis: PositionAnalysis): Promise<void>;
+  get(fen: string, depth: number, multiPv: number, engine: string, movetimeMs?: number): Promise<PositionAnalysis | undefined>;
+  set(analysis: PositionAnalysis, movetimeMs?: number): Promise<void>;
 }
 
 export interface AnalyzeGameOptions {
@@ -244,6 +249,7 @@ async function analysePositions(
 ): Promise<Map<string, PositionAnalysis>> {
   const { engine, cache, onProgress, signal } = opts;
   const search = searchSettingsFrom(opts.settings);
+  const movetimeMs = search.movetimeMs ?? 0;
   const results = new Map<string, PositionAnalysis>();
   const total = fens.length;
 
@@ -274,7 +280,7 @@ async function analysePositions(
 
   /** Cache -> (forced move derivation | engine) -> cache, for one FEN. */
   const resolve = async (fen: string, chain: number): Promise<PositionAnalysis> => {
-    const hit = cache ? await cache.get(fen, search.depth, search.multiPv, engineName) : undefined;
+    const hit = cache ? await cache.get(fen, search.depth, search.multiPv, engineName, movetimeMs) : undefined;
     throwIfAborted(signal);
     if (hit) return hit;
 
@@ -286,7 +292,7 @@ async function analysePositions(
     } else {
       analysis = await runEngine(fen);
     }
-    if (cache) await cache.set(analysis);
+    if (cache) await cache.set(analysis, movetimeMs);
     return analysis;
   };
 

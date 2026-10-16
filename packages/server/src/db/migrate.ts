@@ -47,9 +47,10 @@ export const MIGRATION_STATEMENTS: readonly string[] = [
     depth INTEGER NOT NULL,
     multipv INTEGER NOT NULL,
     engine TEXT NOT NULL,
+    movetime_ms INTEGER NOT NULL DEFAULT 0,
     lines_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    PRIMARY KEY (fen, depth, multipv, engine)
+    PRIMARY KEY (fen, depth, multipv, engine, movetime_ms)
   )`,
   `CREATE TABLE IF NOT EXISTS game_analyses (
     game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
@@ -76,9 +77,46 @@ export const MIGRATION_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at)`,
 ];
 
+/**
+ * Upgrades for databases created by earlier schema versions. Each step checks the current shape
+ * and is a no-op once applied. They run after MIGRATION_STATEMENTS (which only create what is
+ * missing), inside the same transaction.
+ */
+export const MIGRATION_UPGRADES: readonly ((sqlite: Database.Database) => void)[] = [
+  /**
+   * position_analyses gained movetime_ms in its primary key. SQLite cannot alter a primary key,
+   * so the table is rebuilt; existing rows were produced by depth-limited searches (movetime 0).
+   */
+  function addMovetimeToPositionAnalyses(sqlite) {
+    if (hasColumn(sqlite, 'position_analyses', 'movetime_ms')) return;
+    sqlite.exec(`
+      ALTER TABLE position_analyses RENAME TO position_analyses_old;
+      CREATE TABLE position_analyses (
+        fen TEXT NOT NULL,
+        depth INTEGER NOT NULL,
+        multipv INTEGER NOT NULL,
+        engine TEXT NOT NULL,
+        movetime_ms INTEGER NOT NULL DEFAULT 0,
+        lines_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (fen, depth, multipv, engine, movetime_ms)
+      );
+      INSERT INTO position_analyses (fen, depth, multipv, engine, movetime_ms, lines_json, created_at)
+        SELECT fen, depth, multipv, engine, 0, lines_json, created_at FROM position_analyses_old;
+      DROP TABLE position_analyses_old;
+    `);
+  },
+];
+
+export function hasColumn(sqlite: Database.Database, table: string, column: string): boolean {
+  const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return columns.some((c) => c.name === column);
+}
+
 export function migrate(sqlite: Database.Database): void {
   const run = sqlite.transaction(() => {
     for (const statement of MIGRATION_STATEMENTS) sqlite.exec(statement);
+    for (const upgrade of MIGRATION_UPGRADES) upgrade(sqlite);
   });
   run();
 }

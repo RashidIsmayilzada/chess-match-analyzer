@@ -250,15 +250,28 @@ describe('analyzeGame positions', () => {
     const result = await analyzeGame(baseOptions({ engine: engine as unknown as UciEngine, cache }));
 
     expect(cache.get).toHaveBeenCalledTimes(5);
-    expect(cache.get).toHaveBeenCalledWith(GAME.initialFen, 12, 2, ENGINE_NAME);
+    expect(cache.get).toHaveBeenCalledWith(GAME.initialFen, 12, 2, ENGINE_NAME, 0);
     expect(engine.analyse).toHaveBeenCalledTimes(4);
     expect(engine.analyse.mock.calls.map((c) => c[0])).not.toContain(cached.fen);
     expect(cache.set).toHaveBeenCalledTimes(4);
-    for (const [stored] of cache.set.mock.calls) expect(stored.engine).toBe(ENGINE_NAME);
+    for (const [stored, movetime] of cache.set.mock.calls) {
+      expect(stored.engine).toBe(ENGINE_NAME);
+      expect(movetime).toBe(0);
+    }
     expect(cache.store.size).toBe(5);
     // The cached analysis is what the move sees.
     expect(result.moves[1]!.evalAfter).toEqual({ type: 'cp', value: 123 });
     expect(result.moves[2]!.position).toBe(cached);
+  });
+
+  it('keys the cache by movetime so time-limited searches never stand in for fixed-depth ones', async () => {
+    const cache = makeCache();
+    const engine = makeEngine();
+    await analyzeGame(baseOptions({ engine: engine as unknown as UciEngine, cache, settings: { ...SETTINGS, movetimeMs: 250 } }));
+
+    expect(cache.get).toHaveBeenCalledWith(GAME.initialFen, 12, 2, ENGINE_NAME, 250);
+    for (const call of cache.get.mock.calls) expect(call[4]).toBe(250);
+    for (const [, movetime] of cache.set.mock.calls) expect(movetime).toBe(250);
   });
 
   it('reports monotonic progress ending at 1, once per distinct position', async () => {

@@ -38,7 +38,7 @@ Entry: `src/index.ts` re-exports everything public.
 | classify | `src/classify/index.ts` | `classifyMove(ctx: MoveContext, t: Thresholds) => Classification` plus helpers per rule (`isBrilliant`, `isGreat`, `isMiss`, `bandFor`). |
 | accuracy | `src/classify/accuracy.ts` | `moveAccuracy(winProbLoss, t)`, `gameAccuracy(moves, color, t)`, `estimateRating(avgCpLoss, timeClass, t)`. |
 | pgn | `src/pgn/index.ts` | `parsePgn(pgn) => { headers, moves: {san, uci, fenBefore, fenAfter, clockSeconds?}[] }` using chess.js. Handles chess.com `{[%clk ...]}` comments. |
-| analyze | `src/analyze/index.ts` | `analyzeGame({ pgn, timeClass, engine, book, settings, thresholds, onProgress }) => GameAnalysis`. Orchestrates: parse → analyse every position (with a `PositionCache` interface for memoisation) → classify → summarise → key moments. Engine results are normalised to the REQUESTED depth before caching (`cache.get` is keyed by the requested settings). Positions with exactly one legal move are never sent to the engine (Stockfish answers them with a meaningless `cp 0`): their eval is derived from the position after the forced move (`deriveForcedMoveAnalysis`). Terminal positions (engine returns `lines: []`) get `evalBefore`/`evalAfter` from `terminalScore`: checkmate is `{ type: 'mate', value: 0 }` (the side to move is mated), every other game end is `cp 0`; a cp value never stands in for a mate. `opening.lastBookPly` is the ply of the last move classified `book`; `opening.eco`/`name` come from the longest named line that is a prefix of the game, which may be shorter (e.g. 1.d4 Nf6 2.Nc3 is book because named A45 lines continue from it, while the name is the 2-ply "Indian Defense"). |
+| analyze | `src/analyze/index.ts` | `analyzeGame({ pgn, timeClass, engine, book, settings, thresholds, onProgress }) => GameAnalysis`. Orchestrates: parse → analyse every position (with a `PositionCache` interface for memoisation) → classify → summarise → key moments. Engine results are normalised to the REQUESTED depth before caching (`cache.get(fen, depth, multiPv, engine, movetimeMs)` is keyed by the requested settings, movetime included: 0 for a depth search). Positions with exactly one legal move are never sent to the engine (Stockfish answers them with a meaningless `cp 0`): their eval is derived from the position after the forced move (`deriveForcedMoveAnalysis`). Terminal positions (engine returns `lines: []`) get `evalBefore`/`evalAfter` from `terminalScore`: checkmate is `{ type: 'mate', value: 0 }` (the side to move is mated), every other game end is `cp 0`; a cp value never stands in for a mate. `opening.lastBookPly` is the ply of the last move classified `book`; `opening.eco`/`name` come from the longest named line that is a prefix of the game, which may be shorter (e.g. 1.d4 Nf6 2.Nc3 is book because named A45 lines continue from it, while the name is the 2-ply "Indian Defense"). |
 
 `MoveContext` (input to `classifyMove`):
 
@@ -120,7 +120,7 @@ Schema in `src/db/schema.ts`, migrations applied programmatically at startup
 | profiles | username (pk, lowercase), last_sync (unix seconds of the last completed **full** sync; a "latest N" import leaves it untouched), created_at |
 | games | id (pk, chess.com uuid), url, profile_username (fk; the profile that FIRST imported the game, its owner), time_class, time_control, rated, end_time, white_username, white_rating, white_result, black_username, black_rating, black_result, result, pgn, eco, opening_name, imported_at |
 | game_profiles | game_id (fk, cascade), profile_username (fk), imported_at (pk = game_id+profile_username). Every profile a game was imported for: a game between two imported profiles is in both players' archives and is linked to both. The boot migration backfills it from `games`. Game lists, profile game counts and auto-analysis use this table, never `games.profile_username`. |
-| position_analyses | fen, depth, multipv, engine (pk = fen+depth+multipv+engine), lines_json, created_at |
+| position_analyses | fen, depth (REQUESTED depth), multipv, engine, movetime_ms (requested movetime, 0 for a depth search; pk = fen+depth+multipv+engine+movetime_ms), lines_json, created_at. Older databases are rebuilt at boot (existing rows become movetime 0). |
 | game_analyses | game_id (fk), settings_key, analysis_json, analyzed_at (pk = game_id+settings_key) |
 | settings | key (pk), value_json |
 | jobs | id (pk), kind ('import' | 'analysis'), payload_json, status, progress, error, created_at, started_at, finished_at |
@@ -149,7 +149,9 @@ events broadcast over SSE. The engine is restarted when enginePath / threads / h
 but only between jobs: a running analysis holds a lease on the engine (`EngineManager.lease`)
 and every other `acquire` (e.g. `/api/health`) gets the running engine as-is until the job
 finishes. Position cache: `position_analyses` table keyed by
-(fen, depth, multipv, engine) where depth is the REQUESTED depth. Cancelling a running job
+(fen, depth, multipv, engine, movetime_ms) where depth is the REQUESTED depth and movetime_ms the
+requested movetime (0 when none): a time-limited search reaches an arbitrary depth and is never
+served as a fixed-depth result, nor the other way round. Cancelling a running job
 stops the engine search (`stop`). Running jobs found at boot are re-queued.
 
 ### HTTP API (all JSON, prefix `/api`)

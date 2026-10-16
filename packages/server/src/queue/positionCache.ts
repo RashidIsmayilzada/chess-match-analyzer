@@ -1,6 +1,8 @@
 /**
- * SQLite-backed implementation of the core `PositionCache` interface, keyed by
- * (fen, depth, multipv, engine) in the `position_analyses` table.
+ * SQLite-backed implementation of the core `PositionCache` interface, keyed by the REQUESTED
+ * search settings (fen, depth, multipv, engine, movetime_ms) in the `position_analyses` table.
+ * movetime_ms is 0 for depth-limited searches; a time-limited search reaches an arbitrary depth
+ * and must never be served as a fixed-depth result (or the other way round).
  */
 import type { EngineLine, PositionAnalysis, PositionCache } from '@chess-analyzer/core';
 import { and, count, eq } from 'drizzle-orm';
@@ -13,7 +15,7 @@ export class SqlitePositionCache implements PositionCache {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async get(fen: string, depth: number, multiPv: number, engine: string): Promise<PositionAnalysis | undefined> {
+  async get(fen: string, depth: number, multiPv: number, engine: string, movetimeMs = 0): Promise<PositionAnalysis | undefined> {
     const row = this.db
       .select()
       .from(positionAnalyses)
@@ -23,6 +25,7 @@ export class SqlitePositionCache implements PositionCache {
           eq(positionAnalyses.depth, depth),
           eq(positionAnalyses.multipv, multiPv),
           eq(positionAnalyses.engine, engine),
+          eq(positionAnalyses.movetimeMs, movetimeMs),
         ),
       )
       .get();
@@ -36,7 +39,7 @@ export class SqlitePositionCache implements PositionCache {
     return { fen: row.fen, depth: row.depth, multipv: row.multipv, engine: row.engine, lines };
   }
 
-  async set(analysis: PositionAnalysis): Promise<void> {
+  async set(analysis: PositionAnalysis, movetimeMs = 0): Promise<void> {
     const linesJson = JSON.stringify(analysis.lines);
     this.db
       .insert(positionAnalyses)
@@ -45,11 +48,12 @@ export class SqlitePositionCache implements PositionCache {
         depth: analysis.depth,
         multipv: analysis.multipv,
         engine: analysis.engine,
+        movetimeMs,
         linesJson,
         createdAt: this.now().toISOString(),
       })
       .onConflictDoUpdate({
-        target: [positionAnalyses.fen, positionAnalyses.depth, positionAnalyses.multipv, positionAnalyses.engine],
+        target: [positionAnalyses.fen, positionAnalyses.depth, positionAnalyses.multipv, positionAnalyses.engine, positionAnalyses.movetimeMs],
         set: { linesJson },
       })
       .run();
