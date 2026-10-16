@@ -29,7 +29,11 @@ export interface Thresholds {
   brilliant: {
     /** Move must be within this win-prob loss of the best move. */
     maxLossFromBest: number;
-    /** Minimum net material given up (pawn units) for a move to count as a sacrifice. 3 = minor piece. */
+    /**
+     * Minimum NET material given up (pawn units: SEE loss minus what the move itself captures)
+     * for a move to count as a sacrifice. 2 = an exchange sacrifice or a piece for a pawn
+     * (Greek gift Bxh7+ Kxh7 nets 3 - 1 = 2); 3 = a clean minor piece.
+     */
     minSacrificeValue: number;
     /** No brilliant when the mover was already winning by more than this (cp, mover POV)... */
     maxEvalBeforeCp: number;
@@ -78,6 +82,12 @@ export interface Thresholds {
     byTimeClass: Record<'bullet' | 'blitz' | 'rapid', { base: number; slope: number }>;
     min: number;
     max: number;
+    /**
+     * Evals (cp, mover POV, mate converted via winProb.mateCp) are clamped to +-evalClampCp before
+     * the per-move centipawn loss is computed, so swings between "mate in 9" and "+12" in a trivially
+     * won position do not inflate averageCpLoss. Lichess uses 1000.
+     */
+    evalClampCp: number;
   };
 
   keyMoments: {
@@ -101,7 +111,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   },
   brilliant: {
     maxLossFromBest: 0.02,
-    minSacrificeValue: 3,
+    minSacrificeValue: 2,
     maxEvalBeforeCp: 300,
     allowWhenWinningIfMate: true,
     minWinProbAfter: 0.45,
@@ -132,6 +142,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
     },
     min: 100,
     max: 3200,
+    evalClampCp: 1000,
   },
   keyMoments: {
     minSwing: 0.15,

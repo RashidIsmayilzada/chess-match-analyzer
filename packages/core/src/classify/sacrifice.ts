@@ -1,3 +1,38 @@
+/**
+ * Sacrifice detection.
+ *
+ * `detectSacrifice(fenBefore, uci)` answers: after playing `uci`, how much material does the
+ * mover leave en prise that a simple capture sequence could win, net of what the move itself
+ * captured and net of what was already hanging before the move?
+ *
+ * ALGORITHM
+ * 1. Load `fenBefore`. For every piece of the mover (kings excluded) that the opponent attacks,
+ *    run a static exchange evaluation (SEE) on that square with the opponent capturing first.
+ *    `max(0, SEE)` is how much the opponent could win there. This is the "hanging before" map.
+ * 2. Make the move (chess.js validates legality). Repeat step 1 on the new position: the
+ *    "hanging after" map.
+ * 3. For each square hanging after the move, subtract what was already hanging on it before
+ *    (for the piece that moved, subtract what was hanging on its origin square): material that was
+ *    en prise before and is still en prise is not a new sacrifice. Only positive remainders count,
+ *    and those squares are reported.
+ * 4. Subtract the material the move itself won: the captured piece, and for a promotion the gain
+ *    from pawn to the promoted piece (a promoted queen that is immediately taken only costs a pawn).
+ * 5. `value = max(0, result)`, `isSacrifice = value >= 1` (a pawn is the smallest unit).
+ *
+ * SEE (swap-list algorithm, chessprogramming.org "SEE - The Swap Algorithm"): starting with the
+ * value of the piece on the square, each side in turn captures with its least valuable attacker,
+ * the attacker is lifted off the board (revealing x-ray attackers) and `gain[d] = value(capturer)
+ * - gain[d-1]` is recorded. A backward negamax pass `gain[d-1] = -max(-gain[d-1], gain[d])` lets
+ * each side stop the sequence when continuing would lose material. Pins are ignored; king
+ * legality is respected: a king never captures on a square the other side still attacks.
+ *
+ * Consequences of this definition (see sacrifice.test.ts):
+ * - Greek gift Bxh7+ Kxh7 nets 2 (bishop 3 - pawn 1), an exchange sac Rxc3 bxc3 nets 2, a knight
+ *   left to a pawn nets 3, a capture that wins material back nets 0.
+ */
+import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
+import { PIECE_VALUES } from '../config/thresholds.js';
+
 export interface SacrificeResult {
   isSacrifice: boolean;
   /** Net material (pawn units) the mover leaves en prise and cannot recoup by recapture. 0 if none. */
@@ -6,7 +41,110 @@ export interface SacrificeResult {
   squares: string[];
 }
 
-/** Detect whether playing `uci` in `fenBefore` sacrifices material. See docs/ARCHITECTURE.md. */
-export function detectSacrifice(_fenBefore: string, _uci: string): SacrificeResult {
-  throw new Error('not implemented');
+/** Smallest unit of material: anything less than a pawn is not a sacrifice. */
+const MIN_SACRIFICE_VALUE = PIECE_VALUES.p;
+
+const UCI_RE = /^([a-h][1-8])([a-h][1-8])([qrbn])?$/;
+
+function otherColor(c: Color): Color {
+  return c === 'w' ? 'b' : 'w';
+}
+
+/** Capture ordering: least valuable attacker first, the king always last. */
+function captureOrder(type: PieceSymbol): number {
+  return type === 'k' ? Number.POSITIVE_INFINITY : PIECE_VALUES[type];
+}
+
+function leastValuableAttacker(board: Chess, square: Square, side: Color): { from: Square; type: PieceSymbol } | undefined {
+  let best: { from: Square; type: PieceSymbol } | undefined;
+  for (const from of board.attackers(square, side)) {
+    const piece = board.get(from);
+    if (!piece) continue;
+    if (!best || captureOrder(piece.type) < captureOrder(best.type)) best = { from, type: piece.type };
+  }
+  return best;
+}
+
+/**
+ * Static exchange evaluation on `square` (which holds a piece of the side opposite to `attacker`),
+ * with `attacker` capturing first. Returns the net material, in pawn units, that `attacker` wins
+ * when both sides play the exchange optimally (negative when capturing would lose material;
+ * 0 when no legal capture exists).
+ */
+export function staticExchangeEvaluation(chess: Chess, square: Square, attacker: Color): number {
+  const target = chess.get(square);
+  if (!target || target.color === attacker) return 0;
+
+  // Scratch board: pieces are lifted off as they capture so that x-ray attackers become visible.
+  const board = new Chess(chess.fen(), { skipValidation: true });
+  const gain: number[] = [PIECE_VALUES[target.type]];
+  let side = attacker;
+  let d = 0;
+
+  for (;;) {
+    const next = leastValuableAttacker(board, square, side);
+    if (!next) break;
+    // A king may only capture when the square is no longer attacked by the other side.
+    if (next.type === 'k' && board.attackers(square, otherColor(side)).length > 0) break;
+    d += 1;
+    gain[d] = PIECE_VALUES[next.type] - (gain[d - 1] as number);
+    board.remove(next.from);
+    side = otherColor(side);
+  }
+
+  if (d === 0) return 0;
+  while (--d > 0) {
+    gain[d - 1] = -Math.max(-(gain[d - 1] as number), gain[d] as number);
+  }
+  return gain[0] as number;
+}
+
+/** Material of `color` that the other side can win by capturing, per square (kings excluded). */
+function hangingMaterial(chess: Chess, color: Color): Map<Square, number> {
+  const result = new Map<Square, number>();
+  const enemy = otherColor(color);
+  for (const rank of chess.board()) {
+    for (const cell of rank) {
+      if (!cell || cell.color !== color || cell.type === 'k') continue;
+      if (chess.attackers(cell.square, enemy).length === 0) continue;
+      const loss = staticExchangeEvaluation(chess, cell.square, enemy);
+      if (loss > 0) result.set(cell.square, loss);
+    }
+  }
+  return result;
+}
+
+/** Detect whether playing `uci` in `fenBefore` sacrifices material. See the module comment. */
+export function detectSacrifice(fenBefore: string, uci: string): SacrificeResult {
+  const m = UCI_RE.exec(uci.trim());
+  if (!m) throw new Error(`detectSacrifice: invalid UCI move "${uci}"`);
+  const from = m[1] as Square;
+  const to = m[2] as Square;
+  const promotion = m[3] as PieceSymbol | undefined;
+
+  const chess = new Chess(fenBefore);
+  const mover = chess.turn();
+
+  const before = hangingMaterial(chess, mover);
+  // Throws on an illegal move; that is a caller bug and must not be silently classified.
+  const move = chess.move({ from, to, promotion });
+  const after = hangingMaterial(chess, mover);
+
+  let value = 0;
+  const squares: string[] = [];
+  for (const [square, lossAfter] of after) {
+    const prior = (square === move.to ? before.get(move.from) : before.get(square)) ?? 0;
+    const added = lossAfter - prior;
+    if (added > 0) {
+      value += added;
+      squares.push(square);
+    }
+  }
+
+  const captured = move.captured ? PIECE_VALUES[move.captured] : 0;
+  const promotionGain = move.promotion ? PIECE_VALUES[move.promotion] - PIECE_VALUES.p : 0;
+  value = Math.max(0, value - captured - promotionGain);
+
+  const isSacrifice = value >= MIN_SACRIFICE_VALUE;
+  return { isSacrifice, value, squares: isSacrifice ? squares : [] };
 }
