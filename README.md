@@ -20,7 +20,7 @@ packages/web      @chess-analyzer/web     Vite + React 19 UI (chessground board,
 engines/          Stockfish binary (downloaded by scripts/setup-engine.sh, git-ignored)
 data/openings/    Lichess chess-openings dataset (ECO, name, moves)
 data/fixtures/    sample PGNs and a chess.com archive used by tests
-scripts/          setup-engine.sh, smoke.sh (+ smoke.mjs)
+scripts/          setup-engine.sh, smoke.sh (+ smoke.mjs), calibrate.mjs
 ```
 
 ## Setup
@@ -112,3 +112,24 @@ Things worth knowing when tuning:
   model of ACPL to rating.
 - Engine settings (depth, MultiPV, threads, hash, movetime, engine path) are on the same page;
   MultiPV must be at least 2 for Great / Brilliant detection.
+
+### Calibration report
+
+`scripts/calibrate.mjs` (`npm run calibrate -- ...`) runs the real pipeline (`analyzeGame`, the
+default opening book, a fresh Stockfish per game) over a few games and prints, per game, the
+players, result, opening, each side's accuracy / estimated rating and a classification count
+table, then the totals and every Brilliant / Great / Miss with ply, SAN, win probability
+before/after, loss, evals (white POV), the engine's best and second-best move and the gross
+sacrifice value, so you can compare them with chess.com's Game Review move by move.
+
+```sh
+npm run build -w packages/core                       # and -w packages/server for --username
+node scripts/calibrate.mjs --username xseven123 --games 5 --depth 14 --threads 4
+node scripts/calibrate.mjs --pgn data/fixtures/game1.pgn --pgn data/fixtures/game2.pgn --depth 14 --threads 1
+```
+
+Options: `--username` (latest N standard games from chess.com, via the server's importer client),
+`--games` (5), `--pgn` (repeatable), `--depth` (14), `--threads` (4), `--multipv` (3), `--hash`
+(256), `--engine` (`engines/stockfish`). Multi-threaded Stockfish is not deterministic: use
+`--threads 1` when you compare runs. The report uses `DEFAULT_THRESHOLDS`, not the overrides
+saved from the Settings page.
