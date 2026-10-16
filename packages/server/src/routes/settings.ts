@@ -34,7 +34,7 @@ const thresholdsPatchSchema = z
       .object({
         maxLossFromBest: z.number().min(0).max(1),
         minSacrificeValue: z.number().min(0),
-        maxEvalBeforeCp: z.number(),
+        maxWinProbBefore: z.number().min(0).max(1),
         allowWhenWinningIfMate: z.boolean(),
         minWinProbAfter: z.number().min(0).max(1),
         excludeMateInOne: z.boolean(),
@@ -48,6 +48,8 @@ const thresholdsPatchSchema = z
         maxWinProbBefore: z.number().min(0).max(1),
         minWinProbBefore: z.number().min(0).max(1),
         excludeForcedMoves: z.boolean(),
+        excludeRecaptures: z.boolean(),
+        excludeFreeCaptures: z.boolean(),
       })
       .partial()
       .strict(),

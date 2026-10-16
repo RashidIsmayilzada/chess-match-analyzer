@@ -61,6 +61,21 @@ export function deepMerge<T>(base: T, patch: unknown): T {
   return out as T;
 }
 
+/**
+ * Keep only the parts of a stored override whose keys exist in `shape` (recursively). Overrides
+ * saved before a threshold key was renamed or removed (e.g. `brilliant.maxEvalBeforeCp`) would
+ * otherwise leak into the effective settings and be rejected when the settings page saves them back.
+ */
+export function pruneToShape(shape: unknown, value: unknown): unknown {
+  if (!isPlainObject(shape) || !isPlainObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (!(key in shape)) continue;
+    out[key] = pruneToShape(shape[key], child);
+  }
+  return out;
+}
+
 export class SettingsService {
   constructor(
     private readonly db: Db,
@@ -98,7 +113,7 @@ export class SettingsService {
 
   getThresholds(): Thresholds {
     const stored = this.getRaw<DeepPartial<Thresholds>>(SETTINGS_KEYS.thresholds) ?? {};
-    return deepMerge(structuredClone(DEFAULT_THRESHOLDS), stored);
+    return deepMerge(structuredClone(DEFAULT_THRESHOLDS), pruneToShape(DEFAULT_THRESHOLDS, stored));
   }
 
   getAll(): EffectiveSettings {

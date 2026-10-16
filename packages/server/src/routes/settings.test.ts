@@ -55,4 +55,36 @@ describe('/api/settings', () => {
     const badThreshold = await app.inject({ method: 'PUT', url: '/api/settings', payload: { thresholds: { bands: { good: 5 } } } });
     expect(badThreshold.statusCode).toBe(400);
   });
+
+  it('accepts the brilliant / great / miss threshold keys and rejects the removed maxEvalBeforeCp', async () => {
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        thresholds: {
+          brilliant: { maxWinProbBefore: 0.9 },
+          great: { excludeRecaptures: false, excludeFreeCaptures: false },
+          miss: { minOwnLoss: 0.2 },
+        },
+      },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().thresholds.brilliant).toEqual({ ...DEFAULT_THRESHOLDS.brilliant, maxWinProbBefore: 0.9 });
+    expect(put.json().thresholds.great).toEqual({ ...DEFAULT_THRESHOLDS.great, excludeRecaptures: false, excludeFreeCaptures: false });
+    expect(put.json().thresholds.miss.minOwnLoss).toBe(0.2);
+
+    const removed = await app.inject({ method: 'PUT', url: '/api/settings', payload: { thresholds: { brilliant: { maxEvalBeforeCp: 300 } } } });
+    expect(removed.statusCode).toBe(400);
+    const outOfRange = await app.inject({ method: 'PUT', url: '/api/settings', payload: { thresholds: { brilliant: { maxWinProbBefore: 2 } } } });
+    expect(outOfRange.statusCode).toBe(400);
+  });
+
+  it('drops stored overrides for threshold keys that no longer exist, so the settings page can save them back', async () => {
+    app.ctx.settings.setRaw('thresholds', { brilliant: { maxEvalBeforeCp: 300, minSacrificeValue: 3 }, gone: { x: 1 } });
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().thresholds).toEqual({ ...DEFAULT_THRESHOLDS, brilliant: { ...DEFAULT_THRESHOLDS.brilliant, minSacrificeValue: 3 } });
+    const saveBack = await app.inject({ method: 'PUT', url: '/api/settings', payload: { thresholds: get.json().thresholds } });
+    expect(saveBack.statusCode).toBe(200);
+  });
 });
+
