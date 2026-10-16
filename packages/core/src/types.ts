@@ -177,7 +177,11 @@ export interface GameRecord {
   /** chess.com game uuid. */
   id: string;
   url: string;
-  /** The profile this game was imported for (lowercase). */
+  /**
+   * The profile this game is viewed for (lowercase): the `profile` filter/query it was requested
+   * with when the game is linked to that profile, otherwise the profile that first imported it.
+   * A game between two imported profiles is linked to both.
+   */
   profileUsername: string;
   timeClass: TimeClass;
   /** chess.com time_control string, e.g. "300", "180+2". */
@@ -200,7 +204,7 @@ export interface GameRecord {
 
 export interface Profile {
   username: string;
-  /** Unix seconds of last successful sync. */
+  /** Unix seconds of the last completed full ("all") sync. A "latest N" import does not set it. */
   lastSync?: number;
   gameCount: number;
 }

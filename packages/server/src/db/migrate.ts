@@ -32,6 +32,16 @@ export const MIGRATION_STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS games_profile_end_time_idx ON games(profile_username, end_time)`,
   `CREATE INDEX IF NOT EXISTS games_time_class_idx ON games(time_class)`,
+  `CREATE TABLE IF NOT EXISTS game_profiles (
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    profile_username TEXT NOT NULL REFERENCES profiles(username),
+    imported_at TEXT NOT NULL,
+    PRIMARY KEY (game_id, profile_username)
+  )`,
+  `CREATE INDEX IF NOT EXISTS game_profiles_profile_idx ON game_profiles(profile_username)`,
+  // Databases created before game_profiles existed: link every game to its owner.
+  `INSERT OR IGNORE INTO game_profiles (game_id, profile_username, imported_at)
+    SELECT id, profile_username, imported_at FROM games`,
   `CREATE TABLE IF NOT EXISTS position_analyses (
     fen TEXT NOT NULL,
     depth INTEGER NOT NULL,

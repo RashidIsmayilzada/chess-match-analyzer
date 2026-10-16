@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type { Color, EngineScore, GameAnalysis, GameRecord, MoveAnalysis } from '@chess-analyzer/core';
 import { api, errorMessage, type GameDetail } from '../api/client';
 import { useEvent } from '../hooks/useEvents';
@@ -53,6 +53,8 @@ function formatDate(unixSeconds: number): string {
 
 export function GameReviewPage(): JSX.Element {
   const { id = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const viewAs = searchParams.get('profile') ?? undefined;
   const [detail, setDetail] = useState<GameDetail | undefined>();
   const [loadError, setLoadError] = useState<string | undefined>();
   const [ply, setPly] = useState(0);
@@ -62,7 +64,7 @@ export function GameReviewPage(): JSX.Element {
 
   const load = useCallback(async (): Promise<GameDetail | undefined> => {
     try {
-      const d = await api.game(id);
+      const d = await api.game(id, viewAs);
       setDetail(d);
       setLoadError(undefined);
       return d;
@@ -70,7 +72,7 @@ export function GameReviewPage(): JSX.Element {
       setLoadError(errorMessage(err));
       return undefined;
     }
-  }, [id]);
+  }, [id, viewAs]);
 
   // Initial load; orient the board from the profile's side.
   useEffect(() => {
@@ -166,7 +168,7 @@ export function GameReviewPage(): JSX.Element {
     const timer = window.setInterval(() => {
       void (async () => {
         try {
-          const d = await api.game(id);
+          const d = await api.game(id, viewAs);
           if (d.analysis !== undefined && d.analysis.analyzedAt !== lastAnalyzedAt.current) {
             lastAnalyzedAt.current = d.analysis.analyzedAt;
             setDetail(d);
@@ -178,7 +180,7 @@ export function GameReviewPage(): JSX.Element {
       })();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [analyzing, id]);
+  }, [analyzing, id, viewAs]);
 
   const startAnalysis = async () => {
     setAnalyzing({ jobId: undefined, progress: 0 });

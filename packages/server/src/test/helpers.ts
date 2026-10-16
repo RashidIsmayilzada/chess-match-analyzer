@@ -17,7 +17,7 @@ import type {
 import { buildApp, type App, type AppDeps, type BuildAppOptions } from '../app.js';
 import { REPO_ROOT } from '../config.js';
 import type { Db } from '../db/index.js';
-import { games, profiles, type NewGameRow } from '../db/schema.js';
+import { gameProfiles, games, profiles, type NewGameRow } from '../db/schema.js';
 import type { ChesscomArchiveGame } from '../import/chesscom.js';
 
 export const FIXTURE_ARCHIVE_PATH = path.join(REPO_ROOT, 'data', 'fixtures', 'chesscom-archive-sample.json');
@@ -243,7 +243,14 @@ export function insertGame(db: Db, patch: Partial<NewGameRow> & { profileUsernam
   };
   insertProfile(db, row.profileUsername);
   db.insert(games).values(row).run();
+  db.insert(gameProfiles).values({ gameId: row.id, profileUsername: row.profileUsername, importedAt: row.importedAt }).run();
   return row;
+}
+
+/** Link an existing game to another profile (as a second import of the same game would). */
+export function linkGame(db: Db, gameId: string, profileUsername: string): void {
+  insertProfile(db, profileUsername);
+  db.insert(gameProfiles).values({ gameId, profileUsername, importedAt: new Date().toISOString() }).onConflictDoNothing().run();
 }
 
 export async function waitFor<T>(fn: () => T | undefined | false, timeoutMs = 5000, intervalMs = 10): Promise<T> {

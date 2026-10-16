@@ -4,7 +4,7 @@
 import type { GameAnalysis, GameRecord, GameResult, Profile, TimeClass } from '@chess-analyzer/core';
 import { and, count, desc, eq, exists, notExists, sql } from 'drizzle-orm';
 import type { Db } from './db/index.js';
-import { gameAnalyses, games, profiles, type GameRow } from './db/schema.js';
+import { gameAnalyses, gameProfiles, games, profiles, type GameRow } from './db/schema.js';
 
 export interface GameListFilter {
   profile?: string;
@@ -20,11 +20,15 @@ export const MAX_PAGE_SIZE = 200;
 
 export type GameAccuracy = NonNullable<GameRecord['accuracy']>;
 
-export function toGameRecord(row: GameRow, analyzed: boolean, accuracy?: GameAccuracy): GameRecord {
+/**
+ * `profile` is the profile the record is being viewed for (the `?profile=` filter); it replaces
+ * the owner in `profileUsername` so the UI orients the board from that player's side.
+ */
+export function toGameRecord(row: GameRow, analyzed: boolean, accuracy?: GameAccuracy, profile?: string): GameRecord {
   const record: GameRecord = {
     id: row.id,
     url: row.url,
-    profileUsername: row.profileUsername,
+    profileUsername: profile ?? row.profileUsername,
     timeClass: row.timeClass as TimeClass,
     timeControl: row.timeControl,
     rated: row.rated,
@@ -73,11 +77,22 @@ export class GameRepository {
     return sql<number | null>`(select json_extract(${gameAnalyses.analysisJson}, ${`$.${color}.accuracy`}) from ${gameAnalyses} where ${gameAnalyses.gameId} = ${games.id}${keyCond} order by ${gameAnalyses.analyzedAt} desc limit 1)`;
   }
 
+  /** Subquery: the outer game row is linked to `profile` (owner or later importer). */
+  private linkedToProfile(profile: string) {
+    return exists(
+      this.db
+        .select({ one: sql`1` })
+        .from(gameProfiles)
+        .where(and(eq(gameProfiles.gameId, games.id), eq(gameProfiles.profileUsername, profile))),
+    );
+  }
+
   list(filter: GameListFilter, settingsKey: string | undefined): { items: GameRecord[]; total: number } {
     const page = Math.max(1, Math.floor(filter.page ?? 1));
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(filter.pageSize ?? DEFAULT_PAGE_SIZE)));
+    const profile = filter.profile?.trim().toLowerCase() || undefined;
     const conds = [];
-    if (filter.profile) conds.push(eq(games.profileUsername, filter.profile.trim().toLowerCase()));
+    if (profile) conds.push(this.linkedToProfile(profile));
     if (filter.timeClass) conds.push(eq(games.timeClass, filter.timeClass));
     if (filter.analyzed !== undefined) {
       const sub = this.analysisExists(settingsKey);
@@ -103,7 +118,7 @@ export class GameRepository {
     return {
       items: rows.map((r) => {
         const analyzed = Boolean(r.analyzed);
-        return toGameRecord(r.game, analyzed, analyzed ? toAccuracy(r.accuracyWhite, r.accuracyBlack) : undefined);
+        return toGameRecord(r.game, analyzed, analyzed ? toAccuracy(r.accuracyWhite, r.accuracyBlack) : undefined, profile);
       }),
       total,
     };
@@ -113,16 +128,45 @@ export class GameRepository {
     return this.db.select().from(games).where(eq(games.id, id)).get();
   }
 
-  get(id: string, settingsKey: string | undefined): { game: GameRecord; analysis?: GameAnalysis } | undefined {
+  /**
+   * One game with its analysis. `profile`, when given and linked to the game, becomes the
+   * record's `profileUsername` (the side the viewer plays); otherwise the owner is reported.
+   */
+  get(id: string, settingsKey: string | undefined, profile?: string): { game: GameRecord; analysis?: GameAnalysis } | undefined {
     const row = this.getRow(id);
     if (!row) return undefined;
     const analysisRow = this.getAnalysisRow(id, settingsKey);
     const analysis = analysisRow ? (JSON.parse(analysisRow.analysisJson) as GameAnalysis) : undefined;
     const analyzed = settingsKey === undefined ? analysisRow !== undefined : analysisRow?.settingsKey === settingsKey;
     const accuracy = analyzed && analysis ? toAccuracy(analysis.white.accuracy, analysis.black.accuracy) : undefined;
-    const result: { game: GameRecord; analysis?: GameAnalysis } = { game: toGameRecord(row, analyzed, accuracy) };
+    const viewer = profile?.trim().toLowerCase() || undefined;
+    const viewAs = viewer && this.isLinked(id, viewer) ? viewer : undefined;
+    const result: { game: GameRecord; analysis?: GameAnalysis } = { game: toGameRecord(row, analyzed, accuracy, viewAs) };
     if (analysis) result.analysis = analysis;
     return result;
+  }
+
+  /** Profiles (lowercase) the game is linked to, owner first. */
+  profilesOf(gameId: string): string[] {
+    const owner = this.getRow(gameId)?.profileUsername;
+    const linked = this.db
+      .select({ profile: gameProfiles.profileUsername })
+      .from(gameProfiles)
+      .where(eq(gameProfiles.gameId, gameId))
+      .orderBy(gameProfiles.importedAt)
+      .all()
+      .map((r) => r.profile);
+    return [...new Set([...(owner ? [owner] : []), ...linked])];
+  }
+
+  private isLinked(gameId: string, profile: string): boolean {
+    return (
+      this.db
+        .select({ one: sql`1` })
+        .from(gameProfiles)
+        .where(and(eq(gameProfiles.gameId, gameId), eq(gameProfiles.profileUsername, profile)))
+        .get() !== undefined
+    );
   }
 
   /** The analysis for `settingsKey`, falling back to the most recent analysis of the game. */
@@ -168,7 +212,7 @@ export class GameRepository {
 
   /** Newest game ids of a profile, optionally only those without an analysis for `settingsKey`. */
   latestGameIds(profileUsername: string, limit: number, opts: { unanalyzedFor?: string | undefined; onlyUnanalyzed?: boolean } = {}): string[] {
-    const conds = [eq(games.profileUsername, profileUsername.toLowerCase())];
+    const conds = [this.linkedToProfile(profileUsername.toLowerCase())];
     if (opts.onlyUnanalyzed) conds.push(notExists(this.analysisExists(opts.unanalyzedFor)));
     return this.db
       .select({ id: games.id })
@@ -182,9 +226,9 @@ export class GameRepository {
 
   listProfiles(): Profile[] {
     const rows = this.db
-      .select({ username: profiles.username, lastSync: profiles.lastSync, gameCount: count(games.id) })
+      .select({ username: profiles.username, lastSync: profiles.lastSync, gameCount: count(gameProfiles.gameId) })
       .from(profiles)
-      .leftJoin(games, eq(games.profileUsername, profiles.username))
+      .leftJoin(gameProfiles, eq(gameProfiles.profileUsername, profiles.username))
       .groupBy(profiles.username)
       .orderBy(profiles.username)
       .all();

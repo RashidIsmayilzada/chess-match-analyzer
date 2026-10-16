@@ -142,7 +142,9 @@ export const api = {
       })}`,
     ),
 
-  game: (id: string) => request<GameDetail>('GET', `/games/${encodeURIComponent(id)}`),
+  /** `profile` views the game as that profile (board orientation) when it is linked to it. */
+  game: (id: string, profile?: string) =>
+    request<GameDetail>('GET', `/games/${encodeURIComponent(id)}${qs({ profile })}`),
 
   analyzeGame: (id: string) =>
     request<{ jobId: string }>('POST', `/games/${encodeURIComponent(id)}/analyze`),

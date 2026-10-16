@@ -18,6 +18,7 @@ export const games = sqliteTable(
     /** chess.com game uuid. */
     id: text('id').primaryKey(),
     url: text('url').notNull(),
+    /** Profile that first imported the game (the owner); see `gameProfiles` for every profile. */
     profileUsername: text('profile_username')
       .notNull()
       .references(() => profiles.username),
@@ -43,6 +44,25 @@ export const games = sqliteTable(
     index('games_profile_end_time_idx').on(t.profileUsername, t.endTime),
     index('games_time_class_idx').on(t.timeClass),
   ],
+);
+
+/**
+ * Which profiles a game was imported for. A game played between two imported profiles appears
+ * in both players' archives; `games.profile_username` keeps the first importer (the owner) and
+ * this table links the game to every profile so each one's game list and counts include it.
+ */
+export const gameProfiles = sqliteTable(
+  'game_profiles',
+  {
+    gameId: text('game_id')
+      .notNull()
+      .references(() => games.id, { onDelete: 'cascade' }),
+    profileUsername: text('profile_username')
+      .notNull()
+      .references(() => profiles.username),
+    importedAt: text('imported_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.gameId, t.profileUsername] }), index('game_profiles_profile_idx').on(t.profileUsername)],
 );
 
 export const positionAnalyses = sqliteTable(
@@ -95,10 +115,11 @@ export const jobs = sqliteTable(
   (t) => [index('jobs_status_created_idx').on(t.status, t.createdAt)],
 );
 
-export const schema = { profiles, games, positionAnalyses, gameAnalyses, settings, jobs };
+export const schema = { profiles, games, gameProfiles, positionAnalyses, gameAnalyses, settings, jobs };
 
 export type ProfileRow = typeof profiles.$inferSelect;
 export type GameRow = typeof games.$inferSelect;
+export type GameProfileRow = typeof gameProfiles.$inferSelect;
 export type NewGameRow = typeof games.$inferInsert;
 export type PositionAnalysisRow = typeof positionAnalyses.$inferSelect;
 export type GameAnalysisRow = typeof gameAnalyses.$inferSelect;

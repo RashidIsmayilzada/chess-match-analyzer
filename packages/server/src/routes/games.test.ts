@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { GameRecord, Profile } from '@chess-analyzer/core';
 import type { App } from '../app.js';
 import { gameAnalyses } from '../db/schema.js';
-import { createTestApp, fakeSettingsKey, insertGame } from '../test/helpers.js';
+import { createTestApp, fakeSettingsKey, insertGame, linkGame } from '../test/helpers.js';
 
 let app: App;
 
@@ -105,6 +105,35 @@ describe('GET /api/games/:id and /api/profiles', () => {
     const res = await app.inject({ method: 'GET', url: '/api/games/nope' });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toMatch(/not found/i);
+  });
+
+  it('a game linked to two profiles is listed and counted for both and viewed from each side', async () => {
+    const db = app.ctx.database.db;
+    // alice (white, owner) played bob (black); bob imported the same game later.
+    insertGame(db, { id: 'shared', profileUsername: 'alice', whiteUsername: 'alice', blackUsername: 'bob' });
+    linkGame(db, 'shared', 'bob');
+
+    expect((await list('?profile=alice')).total).toBe(13);
+    const forBob = await list('?profile=bob');
+    expect(forBob.total).toBe(4);
+    expect(forBob.items.find((g) => g.id === 'shared')?.profileUsername).toBe('bob');
+    expect((await list('')).items.find((g) => g.id === 'shared')?.profileUsername).toBe('alice');
+
+    const asBob = (await app.inject({ method: 'GET', url: '/api/games/shared?profile=bob' })).json() as { game: GameRecord };
+    expect(asBob.game.profileUsername).toBe('bob');
+    const asOwner = (await app.inject({ method: 'GET', url: '/api/games/shared' })).json() as { game: GameRecord };
+    expect(asOwner.game.profileUsername).toBe('alice');
+    // Not linked: the owner is reported.
+    const asStranger = (await app.inject({ method: 'GET', url: '/api/games/shared?profile=carol' })).json() as { game: GameRecord };
+    expect(asStranger.game.profileUsername).toBe('alice');
+
+    const profiles = (await app.inject({ method: 'GET', url: '/api/profiles' })).json() as Profile[];
+    expect(profiles).toEqual([
+      { username: 'alice', gameCount: 13 },
+      { username: 'bob', gameCount: 4 },
+    ]);
+    expect(app.ctx.games.profilesOf('shared')).toEqual(['alice', 'bob']);
+    expect(app.ctx.games.latestGameIds('bob', 1)).toEqual(['shared']);
   });
 
   it('lists profiles with game counts', async () => {

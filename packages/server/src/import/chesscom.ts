@@ -4,7 +4,7 @@
 import { openingNameFromEcoUrl as coreOpeningNameFromEcoUrl, type GameResult, type TimeClass } from '@chess-analyzer/core';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db/index.js';
-import { games, profiles, type NewGameRow } from '../db/schema.js';
+import { gameProfiles, games, profiles, type NewGameRow } from '../db/schema.js';
 
 export const CHESSCOM_API_BASE = 'https://api.chess.com/pub';
 export const USER_AGENT = 'chess-analyzer/0.1 (local)';
@@ -275,6 +275,14 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  * Import games for a chess.com user into the database.
  * - 'latest': walk archives from newest, stop once `count` games are kept.
  * - 'all': every archive; on resync only months >= the profile's last_sync month.
+ *
+ * `profiles.last_sync` is written only when an 'all' import completes: it marks the point up to
+ * which the profile's history is known to be complete. A 'latest N' import leaves it untouched,
+ * so a later 'all' import still fetches every month.
+ *
+ * A game that was already imported for another profile (both players are imported profiles) is
+ * updated in place, keeps its original owner (`games.profile_username`) and is linked to this
+ * profile through `game_profiles`.
  */
 export async function importChesscomGames(opts: ImportOptions): Promise<ImportResult> {
   const username = opts.username.trim().toLowerCase();
@@ -327,8 +335,13 @@ export async function importChesscomGames(opts: ImportOptions): Promise<ImportRe
     if (rows.length === 0) return;
     db.transaction((tx) => {
       for (const row of rows) {
-        const { id: _id, importedAt: _importedAt, ...update } = row;
+        // The first importer stays the owner; everything chess.com may have changed is refreshed.
+        const { id: _id, importedAt: _importedAt, profileUsername: _owner, ...update } = row;
         tx.insert(games).values(row).onConflictDoUpdate({ target: games.id, set: update }).run();
+        tx.insert(gameProfiles)
+          .values({ gameId: row.id, profileUsername: username, importedAt: row.importedAt })
+          .onConflictDoNothing()
+          .run();
       }
     });
   };
@@ -364,10 +377,12 @@ export async function importChesscomGames(opts: ImportOptions): Promise<ImportRe
     if (count !== undefined && imported >= count) break;
   }
 
-  db.update(profiles)
-    .set({ lastSync: Math.floor(now().getTime() / 1000) })
-    .where(eq(profiles.username, username))
-    .run();
+  if (opts.mode === 'all') {
+    db.update(profiles)
+      .set({ lastSync: Math.floor(now().getTime() / 1000) })
+      .where(eq(profiles.username, username))
+      .run();
+  }
 
   gameIds.sort((a, b) => (endTimes.get(b) ?? 0) - (endTimes.get(a) ?? 0));
 

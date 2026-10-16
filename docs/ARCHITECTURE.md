@@ -114,8 +114,9 @@ Schema in `src/db/schema.ts`, migrations applied programmatically at startup
 
 | Table | Columns |
 |---|---|
-| profiles | username (pk, lowercase), last_sync, created_at |
-| games | id (pk, chess.com uuid), url, profile_username (fk), time_class, time_control, rated, end_time, white_username, white_rating, white_result, black_username, black_rating, black_result, result, pgn, eco, opening_name, imported_at |
+| profiles | username (pk, lowercase), last_sync (unix seconds of the last completed **full** sync; a "latest N" import leaves it untouched), created_at |
+| games | id (pk, chess.com uuid), url, profile_username (fk; the profile that FIRST imported the game, its owner), time_class, time_control, rated, end_time, white_username, white_rating, white_result, black_username, black_rating, black_result, result, pgn, eco, opening_name, imported_at |
+| game_profiles | game_id (fk, cascade), profile_username (fk), imported_at (pk = game_id+profile_username). Every profile a game was imported for: a game between two imported profiles is in both players' archives and is linked to both. The boot migration backfills it from `games`. Game lists, profile game counts and auto-analysis use this table, never `games.profile_username`. |
 | position_analyses | fen, depth, multipv, engine (pk = fen+depth+multipv+engine), lines_json, created_at |
 | game_analyses | game_id (fk), settings_key, analysis_json, analyzed_at (pk = game_id+settings_key) |
 | settings | key (pk), value_json |
@@ -134,7 +135,8 @@ Public API, no auth. **Usernames must be lowercased in URLs.** Send a `User-Agen
 - `GET {archive}` → `{ games: [...] }` with `uuid, url, pgn, time_class, time_control, rated, end_time, rules, white{username,rating,result}, black{...}, eco`.
 - Keep only `rules === 'chess'` and `time_class in ('bullet','blitz','rapid')`. Count skipped.
 - "latest N" mode: walk archives from newest, stop once N kept games collected.
-- "all" mode: every archive. On resync, only fetch months >= last_sync month.
+- "all" mode: every archive. On resync, only fetch months >= last_sync month. `last_sync` is written only when an "all" import completes, so an "all" import after a "latest N" import still walks the whole history.
+- A game that is already stored (imported for another profile) is updated in place except for `profile_username` (the first importer stays the owner) and is linked to the importing profile in `game_profiles`.
 - Parse `[ECO ...]` and `[ECOUrl ...]` headers: opening name = last path segment of ECOUrl with `-` → space, strip the move-list suffix after `...` if present.
 
 ### Analysis queue (`src/queue/`)
@@ -151,8 +153,8 @@ stops the engine search (`stop`). Running jobs found at boot are re-queued.
 | GET | /profiles | | `Profile[]` |
 | POST | /import | `{ username, mode: 'all'|'latest', count?: number, autoAnalyzeLatest?: number }` | `{ jobId }` |
 | GET | /import/:jobId | | `ImportJob` |
-| GET | /games | `?profile=&timeClass=&analyzed=&page=&pageSize=` | `{ items: GameRecord[], total }` (analysed rows carry `accuracy: { white, black }`) |
-| GET | /games/:id | | `{ game: GameRecord, analysis?: GameAnalysis }` |
+| GET | /games | `?profile=&timeClass=&analyzed=&page=&pageSize=` | `{ items: GameRecord[], total }` (analysed rows carry `accuracy: { white, black }`). `profile` matches through `game_profiles`; the returned `profileUsername` is that profile. |
+| GET | /games/:id | `?profile=` | `{ game: GameRecord, analysis?: GameAnalysis }`. With `profile` (linked to the game) `game.profileUsername` is that profile, so the UI orients the board from its side; otherwise the owner. |
 | POST | /games/:id/analyze | | `{ jobId }` |
 | POST | /analyze/batch | `{ gameIds: string[] }` | `{ jobIds: string[] }` |
 | GET | /jobs | `?status=&kind=` | `AnalysisJob[]` (default `kind=analysis`); `kind=import` → `ImportJob[]` |

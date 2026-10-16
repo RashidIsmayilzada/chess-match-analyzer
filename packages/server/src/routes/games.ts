@@ -16,6 +16,11 @@ export const gamesQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
 });
 
+export const gameQuerySchema = z.object({
+  /** Profile to view the game as (sets GameRecord.profileUsername when the game is linked to it). */
+  profile: z.string().trim().min(1).optional(),
+});
+
 export const batchBodySchema = z.object({
   gameIds: z.array(z.string().min(1)).min(1).max(5000),
 });
@@ -26,8 +31,9 @@ export function registerGameRoutes(app: FastifyInstance, ctx: AppContext): void 
     return ctx.games.list(query, ctx.queue.currentSettingsKey());
   });
 
-  app.get<{ Params: { id: string } }>('/api/games/:id', async (request) => {
-    const found = ctx.games.get(request.params.id, ctx.queue.currentSettingsKey());
+  app.get<{ Params: { id: string }; Querystring: { profile?: string } }>('/api/games/:id', async (request) => {
+    const { profile } = validate(gameQuerySchema, request.query ?? {}, 'query');
+    const found = ctx.games.get(request.params.id, ctx.queue.currentSettingsKey(), profile);
     if (!found) throw notFound(`Game ${request.params.id} not found`);
     return found;
   });

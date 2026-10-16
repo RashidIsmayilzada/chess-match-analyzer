@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { openDatabase } from '../db/index.js';
-import { games, profiles } from '../db/schema.js';
+import { gameProfiles, games, profiles } from '../db/schema.js';
 import {
   ChesscomClient,
   ChesscomError,
@@ -145,6 +145,42 @@ describe('importChesscomGames', () => {
     expect(urls).toContain(OCT);
     expect(urls).not.toContain(AUG);
     expect(result.archivesFetched).toBe(2);
+  });
+
+  it('"latest N" does not set last_sync, so a later "all" import still fetches every archive', async () => {
+    const { db, client, server } = setup();
+    const common = { db, username: 'xseven123', client, openingNameFromEcoUrl: fakeOpeningNameFromEcoUrl };
+    const latest = await importChesscomGames({ ...common, mode: 'latest', count: 1 });
+    expect(latest.imported).toBe(1);
+    expect(db.select().from(profiles).where(eq(profiles.username, 'xseven123')).get()?.lastSync).toBeNull();
+
+    server.calls.length = 0;
+    const all = await importChesscomGames({ ...common, mode: 'all' });
+    const urls = server.calls.map((c) => c.url);
+    expect(urls).toContain(AUG);
+    expect(urls).toContain(SEP);
+    expect(urls).toContain(OCT);
+    expect(all.archivesFetched).toBe(3);
+    expect(db.select().from(games).all()).toHaveLength(8);
+    expect(db.select().from(profiles).where(eq(profiles.username, 'xseven123')).get()?.lastSync).toBeTypeOf('number');
+  });
+
+  it('a game imported for a second profile keeps its owner and is linked to both profiles', async () => {
+    const fixture = loadFixtureArchive();
+    const shared = cloneGame(fixture[0] as (typeof fixture)[number], { uuid: 'shared', end_time: 1_790_000_000 });
+    const aliceArchive = 'https://api.chess.com/pub/player/alice/games/archives/2026/10';
+    const bobArchive = 'https://api.chess.com/pub/player/bob/games/archives/2026/10';
+    const server = makeFakeChesscom({ alice: { [aliceArchive]: [shared] }, bob: { [bobArchive]: [shared] } });
+    const db = openDatabase(':memory:').db;
+    const client = new ChesscomClient({ fetch: server.fetch, retries: 1 });
+
+    await importChesscomGames({ db, username: 'alice', mode: 'all', client });
+    await importChesscomGames({ db, username: 'bob', mode: 'all', client });
+
+    const rows = db.select().from(games).all();
+    expect(rows.map((r) => [r.id, r.profileUsername])).toEqual([['shared', 'alice']]);
+    const links = db.select().from(gameProfiles).all().map((l) => l.profileUsername).sort();
+    expect(links).toEqual(['alice', 'bob']);
   });
 
   it('re-importing is idempotent (upsert by uuid)', async () => {

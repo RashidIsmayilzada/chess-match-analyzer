@@ -46,6 +46,8 @@ function parseAnalyzed(v: string | null): boolean | undefined {
 export function GamesPage(): JSX.Element {
   const [params, setParams] = useSearchParams();
   const profile = params.get('profile') ?? '';
+  // Carry the profile filter into the review page so the board is oriented from that player's side.
+  const reviewLink = (id: string) => `/games/${encodeURIComponent(id)}${profile ? `?profile=${encodeURIComponent(profile)}` : ''}`;
   const timeClass = parseTimeClass(params.get('timeClass'));
   const analyzed = parseAnalyzed(params.get('analyzed'));
   const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
@@ -334,7 +336,7 @@ export function GamesPage(): JSX.Element {
                   </td>
                   <td>{formatDate(g.endTime)}</td>
                   <td>
-                    <Link to={`/games/${encodeURIComponent(g.id)}`}>{opp.username}</Link>
+                    <Link to={reviewLink(g.id)}>{opp.username}</Link>
                   </td>
                   <td>
                     <span className={`color-swatch ${side}`} /> {side === 'w' ? 'White' : 'Black'}
@@ -358,7 +360,7 @@ export function GamesPage(): JSX.Element {
                     )}
                   </td>
                   <td>
-                    <Link className="btn small" to={`/games/${encodeURIComponent(g.id)}`}>
+                    <Link className="btn small" to={reviewLink(g.id)}>
                       {g.analyzed ? 'Review' : 'Open'}
                     </Link>
                   </td>
