@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isWhitePly, moveNumber, parsePgnPlies, plyLabel, plyOffsetFromFen, sanLineToText, START_FEN, turnFromFen } from './chess';
+import { isWhitePly, moveNumber, parsePgnPlies, plyLabel, plyOffsetFromFen, sanLineToText, squareToGrid, START_FEN, turnFromFen } from './chess';
 
 describe('ply offset for games starting from a FEN', () => {
   it('is 0 for the standard start position', () => {
@@ -38,5 +38,19 @@ describe('ply offset for games starting from a FEN', () => {
     expect(offset).toBe(1);
     expect(plies.map((p) => plyLabel(p.ply, offset))).toEqual(['1...', '2.', '2...', '3.']);
     expect(turnFromFen(plies[0]!.fenBefore)).toBe('b');
+  });
+});
+
+describe('squareToGrid', () => {
+  it('maps squares to the top-left based grid for white orientation', () => {
+    expect(squareToGrid('a8', 'w')).toEqual({ col: 0, row: 0 });
+    expect(squareToGrid('h1', 'w')).toEqual({ col: 7, row: 7 });
+    expect(squareToGrid('e4', 'w')).toEqual({ col: 4, row: 4 });
+  });
+
+  it('mirrors both axes for black orientation', () => {
+    expect(squareToGrid('a8', 'b')).toEqual({ col: 7, row: 7 });
+    expect(squareToGrid('h1', 'b')).toEqual({ col: 0, row: 0 });
+    expect(squareToGrid('e4', 'b')).toEqual({ col: 3, row: 3 });
   });
 });

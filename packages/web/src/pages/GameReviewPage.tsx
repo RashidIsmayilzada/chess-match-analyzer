@@ -4,7 +4,7 @@ import type { Color, EngineScore, GameAnalysis, GameRecord, MoveAnalysis } from 
 import { api, errorMessage, type GameDetail } from '../api/client';
 import { useEvent } from '../hooks/useEvents';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
-import { Board, type BoardArrow } from '../components/Board';
+import { Board, type BoardArrow, type BoardBadge } from '../components/Board';
 import { EvalBar } from '../components/EvalBar';
 import { EvalGraph } from '../components/EvalGraph';
 import { KeyMoments } from '../components/KeyMoments';
@@ -203,6 +203,11 @@ export function GameReviewPage(): JSX.Element {
   const sideToMove = turnFromFen(fen);
   const lastMove = currentMove !== undefined ? uciToKeys(currentMove.uci) : undefined;
 
+  const badge = useMemo<BoardBadge | undefined>(() => {
+    if (currentAnalysis === undefined || lastMove === undefined) return undefined;
+    return { square: lastMove[1], classification: currentAnalysis.classification };
+  }, [currentAnalysis, lastMove]);
+
   const score: EngineScore | undefined =
     currentAnalysis?.evalAfter ?? (currentPly === 0 ? nextAnalysis?.evalBefore : undefined);
 
@@ -310,7 +315,7 @@ export function GameReviewPage(): JSX.Element {
                 </span>
                 {score !== undefined && <span className="mono">{formatScore(score, sideToMove)}</span>}
               </div>
-              <Board fen={fen} orientation={orientation} lastMove={lastMove} arrows={arrows} />
+              <Board fen={fen} orientation={orientation} lastMove={lastMove} arrows={arrows} badge={badge} />
               <div className="small muted inline" style={{ justifyContent: 'space-between' }}>
                 <span>
                   <span className={`color-swatch ${bottomColor}`} /> {playerFor(bottomColor).username}{' '}

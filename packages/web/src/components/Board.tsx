@@ -1,4 +1,4 @@
-import { useEffect, useRef, type JSX } from 'react';
+import { useEffect, useRef, type CSSProperties, type JSX } from 'react';
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
 import type { Config } from '@lichess-org/chessground/config';
@@ -6,7 +6,8 @@ import type { DrawBrushes, DrawShape } from '@lichess-org/chessground/draw';
 import type { Color as CgColor, Key } from '@lichess-org/chessground/types';
 import type { Classification, Color } from '@chess-analyzer/core';
 import { CLASSIFICATION_COLORS } from '../lib/classification';
-import { isCheck, turnFromFen } from '../lib/chess';
+import { isCheck, squareToGrid, turnFromFen } from '../lib/chess';
+import { ClassificationIcon } from '../icons';
 
 export interface BoardArrow {
   from: Key;
@@ -23,6 +24,34 @@ export interface BoardProps {
   /** Show check highlight when the side to move is in check (default true). */
   showCheck?: boolean;
   coordinates?: boolean;
+  /**
+   * Classification badge drawn on the top-right corner of a square (chess.com Game Review style),
+   * normally the destination square of the move just played. Also tints the last-move squares.
+   */
+  badge?: BoardBadge | undefined;
+}
+
+export interface BoardBadge {
+  square: Key;
+  classification: Classification;
+}
+
+/** Badge diameter and corner inset, as fractions of one square. */
+const BADGE_SIZE = 0.42;
+const BADGE_INSET = 0.12;
+const SQUARE_PCT = 100 / 8;
+
+function badgeStyle(badge: BoardBadge, orientation: Color): CSSProperties {
+  const { col, row } = squareToGrid(badge.square, orientation);
+  // Centre of the badge sits just inside the square's top-right corner, so it overhangs the edge.
+  const centreX = col + 1 - BADGE_INSET;
+  const centreY = row + BADGE_INSET;
+  return {
+    left: `${(centreX - BADGE_SIZE / 2) * SQUARE_PCT}%`,
+    top: `${(centreY - BADGE_SIZE / 2) * SQUARE_PCT}%`,
+    width: `${BADGE_SIZE * SQUARE_PCT}%`,
+    height: `${BADGE_SIZE * SQUARE_PCT}%`,
+  };
 }
 
 function buildBrushes(): DrawBrushes {
@@ -57,6 +86,7 @@ export function Board({
   arrows,
   showCheck = true,
   coordinates = true,
+  badge,
 }: BoardProps): JSX.Element {
   const elRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
@@ -119,5 +149,25 @@ export function Board({
     api.setAutoShapes(shapesFromArrows(arrows));
   }, [arrows]);
 
-  return <div ref={elRef} className="board" />;
+  const hostStyle =
+    badge !== undefined
+      ? ({ '--move-tint': `${CLASSIFICATION_COLORS[badge.classification]}80` } as CSSProperties)
+      : undefined;
+
+  return (
+    <div className={badge !== undefined ? 'board-host tinted' : 'board-host'} style={hostStyle}>
+      <div ref={elRef} className="board" />
+      {badge !== undefined && (
+        <div
+          // Remount per move so the pop-in animation replays on every navigation step.
+          key={`${fen}|${badge.square}|${badge.classification}`}
+          className="move-badge"
+          style={badgeStyle(badge, orientation)}
+          aria-hidden="true"
+        >
+          <ClassificationIcon classification={badge.classification} size={100} className="move-badge-icon" />
+        </div>
+      )}
+    </div>
+  );
 }

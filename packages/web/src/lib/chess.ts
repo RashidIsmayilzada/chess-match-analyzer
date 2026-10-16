@@ -113,3 +113,13 @@ export function sanLineToText(line: string[], startPly: number, plyOffset = 0): 
   });
   return parts.join(' ');
 }
+
+/**
+ * Column / row (0..7, top-left origin) of a square as drawn on a board with the given orientation.
+ * Used to place overlays such as the classification badge.
+ */
+export function squareToGrid(square: Key, orientation: Color): { col: number; row: number } {
+  const file = square.charCodeAt(0) - 97;
+  const rank = Number(square[1]) - 1;
+  return orientation === 'w' ? { col: file, row: 7 - rank } : { col: 7 - file, row: rank };
+}

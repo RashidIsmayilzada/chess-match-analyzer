@@ -927,3 +927,47 @@ table.table td.num {
   background: var(--accent);
   color: var(--accent-text);
 }
+
+/* ---------- classification badge on the board (chess.com Game Review style) ---------- */
+
+/* Wraps the chessground element; does not clip so the badge can overhang the square / board edge. */
+.board-host {
+  position: relative;
+  width: 100%;
+}
+
+/* Last-move squares take the classification colour instead of chessground's default green. */
+.board-host.tinted cg-board square.last-move {
+  background-color: var(--move-tint);
+}
+
+.move-badge {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+  animation: move-badge-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) 140ms both;
+}
+
+.move-badge .move-badge-icon {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+@keyframes move-badge-pop {
+  from {
+    transform: scale(0);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .move-badge {
+    animation: none;
+  }
+}
