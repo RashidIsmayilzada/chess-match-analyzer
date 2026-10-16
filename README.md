@@ -103,6 +103,10 @@ Things worth knowing when tuning:
   are converted with `winProb.mateCp`. Band thresholds are win-probability losses.
 - `brilliant.minSacrificeValue` is NET material (SEE loss minus what the move captures): 2 lets
   exchange sacrifices and the Greek gift through, 3 requires a clean minor piece.
+  `brilliant.maxWinProbBefore` (0.95) withholds Brilliant once the game is already decided.
+- `great.excludeRecaptures` / `great.excludeFreeCaptures` keep obvious captures (taking back a
+  traded piece, grabbing a hanging one) from being Great; `miss.minOwnLoss` (0.10) means only a
+  mistake-sized give-back after the opponent's mistake is a Miss.
 - `rating.evalClampCp` clamps evals before centipawn loss is computed so that noise in decisive
   positions does not wreck the average; `rating.byTimeClass` is a deliberately simple linear
   model of ACPL to rating.

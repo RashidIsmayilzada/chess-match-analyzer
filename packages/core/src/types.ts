@@ -137,6 +137,11 @@ export interface MoveAnalysis {
 
   /** True when this move was flagged as a material sacrifice by the classifier. */
   isSacrifice?: boolean;
+  /**
+   * Present with `isSacrifice`: the gross material (pawn units) the move offers, e.g. 9 for a
+   * queen sacrifice (the classifier's threshold uses the NET value, see detectSacrifice).
+   */
+  sacrificeValue?: number;
   /** Clock after the move, in seconds, if present in the PGN. */
   clockSeconds?: number;
 }

@@ -35,9 +35,13 @@ export interface Thresholds {
      * (Greek gift Bxh7+ Kxh7 nets 3 - 1 = 2); 3 = a clean minor piece.
      */
     minSacrificeValue: number;
-    /** No brilliant when the mover was already winning by more than this (cp, mover POV)... */
-    maxEvalBeforeCp: number;
-    /** ...unless the move leads to forced mate for the mover (allowed when true). */
+    /**
+     * No brilliant when the game was already decided before the move: the mover's win probability
+     * (best line, mover POV) is above this. 0.95 is about +8.0; Marshall's 23...Qg3!! from about
+     * +7.6 (0.94) still qualifies, a queen offer at +15 (0.996) does not...
+     */
+    maxWinProbBefore: number;
+    /** ...unless the engine's best line after the move is a forced mate for the mover (allowed when true). */
     allowWhenWinningIfMate: boolean;
     /** Mover must retain at least this win probability after the move (not losing). */
     minWinProbAfter: number;
@@ -56,6 +60,17 @@ export interface Thresholds {
     minWinProbBefore: number;
     /** Not awarded for the only legal move. */
     excludeForcedMoves: boolean;
+    /**
+     * Not awarded for a recapture: a capture on the square where the opponent's previous move
+     * captured (chess.com never calls taking back a traded piece "great").
+     */
+    excludeRecaptures: boolean;
+    /**
+     * Not awarded for a free capture: a capture whose static exchange evaluation for the mover on
+     * the destination square, with the moving piece taking first, is > 0 before the move (the
+     * captured piece was hanging or under-defended, so taking it is obvious).
+     */
+    excludeFreeCaptures: boolean;
   };
 
   miss: {
@@ -63,7 +78,11 @@ export interface Thresholds {
     minOpponentLoss: number;
     /** The mover must have given back at least this fraction of the gained win probability. */
     minGiveBackFraction: number;
-    /** The mover's own loss must be at least this much (otherwise it is just a good/excellent move). */
+    /**
+     * The mover's own loss must be at least this much. Equal to `bands.inaccuracy` by default, so
+     * the move must itself be a mistake or worse: an inaccuracy after the opponent's mistake stays
+     * an inaccuracy (otherwise ordinary inaccuracies chain into a string of Misses).
+     */
     minOwnLoss: number;
   };
 
@@ -112,7 +131,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   brilliant: {
     maxLossFromBest: 0.02,
     minSacrificeValue: 2,
-    maxEvalBeforeCp: 300,
+    maxWinProbBefore: 0.95,
     allowWhenWinningIfMate: true,
     minWinProbAfter: 0.45,
     excludeMateInOne: true,
@@ -123,11 +142,13 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
     maxWinProbBefore: 0.9,
     minWinProbBefore: 0.1,
     excludeForcedMoves: true,
+    excludeRecaptures: true,
+    excludeFreeCaptures: true,
   },
   miss: {
     minOpponentLoss: 0.1,
     minGiveBackFraction: 0.5,
-    minOwnLoss: 0.05,
+    minOwnLoss: 0.1,
   },
   accuracy: {
     a: 103.1668,

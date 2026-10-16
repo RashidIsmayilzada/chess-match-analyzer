@@ -34,7 +34,7 @@ Entry: `src/index.ts` re-exports everything public.
 | engine | `src/engine/uci.ts` | `UciEngine` class: spawn a UCI binary, set options, `analyse(fen, settings) => PositionAnalysis`. Scores normalised to white POV. Serialises concurrent calls (one search at a time). Terminal positions (checkmate / stalemate) return `lines: []`. `PositionAnalysis.depth` is the depth actually reached. |
 | openings | `src/openings/index.ts` | `OpeningBook`: loads the TSVs, `lookupByMoves(sanMoves[]) => OpeningRef | undefined`, `isBookMove(sanMovesSoFar, san)`, `longestMatch(sanMoves[]) => { opening, plies }`, `search(query)` and `list()` for the Openings browser. Also `loadDefaultBook(dataDir)`. |
 | winprob | `src/classify/winprob.ts` | `cpToWinProb(cp, k)`, `scoreToWinProb(score: EngineScore, color: Color, t, sideToMove?)` (mover POV), `scoreToCp(score, mateCp)`, `positionScoreToCp(score, sideToMove, mateCp)`, `isMateZero`, `scoreFromMoverPov`. `mate 0` means "the side to move is checkmated" and carries no sign, so it can only be converted together with the side to move: `scoreToCp` throws on it, `positionScoreToCp` / `scoreToWinProb(..., sideToMove)` resolve it. |
-| sacrifice | `src/classify/sacrifice.ts` | `detectSacrifice(fenBefore, uci) => { isSacrifice, value }`: net material the mover leaves en prise after the move that cannot be recouped by a simple recapture (SEE-style). "En prise" means the opponent can LEGALLY capture it on their next move: after a check only check-escaping captures count, pinned attackers do not count. After a checkmating move (no legal replies) the attack-based notion is used so a mating sacrifice is still a sacrifice. |
+| sacrifice | `src/classify/sacrifice.ts` | `detectSacrifice(fenBefore, uci) => { isSacrifice, value, grossValue, squares }`: `value` is the NET material the mover leaves en prise after the move that cannot be recouped by a simple recapture (SEE-style), net of what already hung before the move and of what the move captured; `grossValue` is the material the move offers (full exchange loss on every square where it added material en prise, e.g. 9 for Marshall's 23...Qg3, whose net value is 5 because the queen already hung for 4 on c3). "En prise" means the opponent can LEGALLY capture it on their next move: after a check only check-escaping captures count, pinned attackers do not count. After a checkmating move (no legal replies) the attack-based notion is used so a mating sacrifice is still a sacrifice. `captureExchange(fenBefore, uci) => { isCapture, gain }`: SEE for the mover on the destination square with the moving piece capturing first (en passant included); `gain > 0` means the captured piece was hanging or under-defended. `staticExchangeEvaluation` is exported too. |
 | classify | `src/classify/index.ts` | `classifyMove(ctx: MoveContext, t: Thresholds) => Classification` plus helpers per rule (`isBrilliant`, `isGreat`, `isMiss`, `bandFor`). |
 | accuracy | `src/classify/accuracy.ts` | `moveAccuracy(winProbLoss, t)`, `gameAccuracy(moves, color, t)`, `estimateRating(avgCpLoss, timeClass, t)`. |
 | pgn | `src/pgn/index.ts` | `parsePgn(pgn) => { headers, moves: {san, uci, fenBefore, fenAfter, clockSeconds?}[] }` using chess.js. Handles chess.com `{[%clk ...]}` comments. |
@@ -50,7 +50,12 @@ interface MoveContext {
   positionAfter: PositionAnalysis;   // engine lines for fenAfter
   isBook: boolean;
   legalMoveCount: number;            // in fenBefore
-  previous?: { winProbLoss: number; winProbBefore: number; winProbAfter: number }; // opponent's previous move, mover POV of THAT move
+  previous?: {                       // the opponent's previous move (filled by analyzeGame)
+    winProbLoss: number; winProbBefore: number; winProbAfter: number; // mover POV of THAT move
+    uci: string; san: string;
+    isCapture: boolean;              // en passant included
+    toSquare: string;                // destination square, e.g. "d2"
+  };
 }
 ```
 
@@ -70,21 +75,33 @@ Order of evaluation: **book → brilliant → great → miss → bands**.
 3. **brilliant** — all of:
    - `loss <= brilliant.maxLossFromBest`
    - `detectSacrifice(fenBefore, uci).value >= brilliant.minSacrificeValue`. The value is NET:
-     SEE loss minus the material the move itself captures, so the Greek gift Bxh7+ Kxh7 nets
-     3 - 1 = 2 and an exchange sacrifice nets 2; the default minimum is 2. The moving piece type
-     does not matter: a pawn capture that leaves a rook hanging counts.
-   - mover's cp eval before the move `<= brilliant.maxEvalBeforeCp`, OR
-     (`allowWhenWinningIfMate` and `positionAfter` best line is a mate for the mover).
+     SEE loss minus the material the move itself captures (and minus what already hung on the
+     moved piece's origin square), so the Greek gift Bxh7+ Kxh7 nets 3 - 1 = 2 and an exchange
+     sacrifice nets 2; the default minimum is 2. The moving piece type does not matter: a pawn
+     capture that leaves a rook hanging counts. A free capture (taking a hanging piece while
+     nothing of the mover's is left en prise) nets 0 and never qualifies.
+   - the position was not already decided: `winProbBefore <= brilliant.maxWinProbBefore` (0.95,
+     about +8.0; Marshall's 23...Qg3!! from about +7.6 qualifies, a sacrifice at +15 does not), OR
+     (`allowWhenWinningIfMate` and the engine's best line in `positionAfter` is a mate for the mover).
    - `winProbAfter >= brilliant.minWinProbAfter`.
    - not a mate-in-one when `excludeMateInOne`.
+   `MoveAnalysis.sacrificeValue` carries `grossValue` (material offered, e.g. 9 for a queen)
+   whenever `isSacrifice` is set; it is for display only.
 4. **great** — all of:
    - `loss <= great.maxLossFromBest` and `isBest`.
    - `position.lines[1]` exists and mover win prob of line 1 minus line 2 `>= great.minGapToSecondBest`.
    - `great.minWinProbBefore <= winProbBefore <= great.maxWinProbBefore`.
    - `legalMoveCount > 1` when `excludeForcedMoves`.
+   - not a recapture when `excludeRecaptures`: a capture on `previous.toSquare` when
+     `previous.isCapture` (e.g. Rxd2 after ...Qxd2+).
+   - not a free capture when `excludeFreeCaptures`: a capture with `captureExchange(fenBefore,
+     uci).gain > 0` (the captured piece was hanging or under-defended, so taking it is obvious).
+   chess.com reserves Great for hard-to-find only moves; obvious captures never are.
 5. **miss** — all of:
    - `previous` exists and `previous.winProbLoss >= miss.minOpponentLoss` (opponent just made a mistake or blunder).
-   - `loss >= miss.minOwnLoss`.
+   - `loss >= miss.minOwnLoss` (default 0.10 = `bands.inaccuracy`: the move must itself be a
+     mistake or worse; an inaccuracy after the opponent's mistake stays an inaccuracy, so
+     ordinary inaccuracies do not chain into strings of Misses).
    - `loss / previous.winProbLoss >= miss.minGiveBackFraction` (the mover gave back at least that share of what the opponent handed over).
 6. **bands** — `isBest` → best; `loss <= bands.excellent` → excellent; `<= bands.good` → good;
    `<= bands.inaccuracy` → inaccuracy; `<= bands.mistake` → mistake; else blunder.
@@ -125,7 +142,9 @@ Schema in `src/db/schema.ts`, migrations applied programmatically at startup
 | settings | key (pk), value_json |
 | jobs | id (pk), kind ('import' | 'analysis'), payload_json, status, progress, error, created_at, started_at, finished_at |
 
-Settings stored: `analysis` → `AnalysisSettings`, `thresholds` → `Thresholds` (optional overrides),
+Settings stored: `analysis` → `AnalysisSettings`, `thresholds` → `Thresholds` (optional overrides;
+stored keys that no longer exist in `DEFAULT_THRESHOLDS`, e.g. the removed `brilliant.maxEvalBeforeCp`,
+are ignored on read),
 `engineNames` → engine name per binary path (remembered after the first start so the settings key
 is known before the engine runs).
 Defaults: depth 18, multiPv 3, threads 8, hashMb 512, enginePath `engines/stockfish`.

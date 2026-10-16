@@ -8,7 +8,7 @@ import { Chess } from 'chess.js';
 import type { Classification, Color, PositionAnalysis } from '../types.js';
 import type { Thresholds } from '../config/thresholds.js';
 import { cpToWinProb, scoreFromPov, scoreToCp } from './winprob.js';
-import { detectSacrifice, type SacrificeResult } from './sacrifice.js';
+import { captureExchange, detectSacrifice, type CaptureExchange, type SacrificeResult } from './sacrifice.js';
 
 export * from './winprob.js';
 export * from './sacrifice.js';
@@ -27,8 +27,19 @@ export interface MoveContext {
   positionAfter: PositionAnalysis;
   isBook: boolean;
   legalMoveCount: number;
-  /** The opponent's previous move, from THAT mover's POV. */
-  previous?: { winProbLoss: number; winProbBefore: number; winProbAfter: number };
+  /** The opponent's previous move; win probabilities from THAT mover's POV. */
+  previous?: PreviousMove;
+}
+
+export interface PreviousMove {
+  winProbLoss: number;
+  winProbBefore: number;
+  winProbAfter: number;
+  uci: string;
+  san: string;
+  isCapture: boolean;
+  /** Destination square of the previous move, e.g. "d2". */
+  toSquare: string;
 }
 
 export interface ClassificationDetail {
@@ -39,6 +50,8 @@ export interface ClassificationDetail {
   cpLoss: number;
   isBest: boolean;
   isSacrifice: boolean;
+  /** Gross material offered (`SacrificeResult.grossValue`), present when `isSacrifice`. */
+  sacrificeValue?: number;
 }
 
 /** Everything the individual rules need, computed once per move. All numbers are mover POV. */
@@ -66,6 +79,10 @@ export interface MoveEvaluation {
   /** Win-prob loss of the opponent's previous move, when known. */
   previousLoss?: number;
   sacrifice: SacrificeResult;
+  /** Capture info: is it a capture, and what the exchange it starts wins for the mover. */
+  capture: CaptureExchange;
+  /** A capture on the square where the opponent's previous move captured. */
+  isRecapture: boolean;
 }
 
 /**
@@ -103,6 +120,7 @@ export function evaluateMove(ctx: MoveContext, t: Thresholds): MoveEvaluation {
 
   const winProbBefore = cpToWinProb(cpBefore, k);
   const winProbAfter = cpToWinProb(cpAfter, k);
+  const capture = captureExchange(ctx.fenBefore, ctx.uci);
 
   // Centipawn loss on clamped evals: beyond +-evalClampCp a position is simply "decisive" and
   // eval noise there must not count as material lost (see Thresholds.rating.evalClampCp).
@@ -123,25 +141,37 @@ export function evaluateMove(ctx: MoveContext, t: Thresholds): MoveEvaluation {
     legalMoveCount: ctx.legalMoveCount,
     previousLoss: ctx.previous?.winProbLoss,
     sacrifice: detectSacrifice(ctx.fenBefore, ctx.uci),
+    capture,
+    isRecapture:
+      capture.isCapture && ctx.previous !== undefined && ctx.previous.isCapture && ctx.previous.toSquare === ctx.uci.slice(2, 4),
   };
 }
 
-/** Rule 3: a sound sacrifice of at least a minor piece from a not-yet-won position. */
+/**
+ * Rule 3: a sound sacrifice of at least an exchange from a position that was not yet decided.
+ * A free capture (the captured piece was hanging and nothing of the mover's is left en prise)
+ * nets a sacrifice value of 0, so it never qualifies.
+ */
 export function isBrilliant(ev: MoveEvaluation, t: Thresholds): boolean {
   const b = t.brilliant;
   if (ev.winProbLoss > b.maxLossFromBest) return false;
   if (ev.sacrifice.value < b.minSacrificeValue) return false;
-  const notAlreadyWinning = ev.cpBefore <= b.maxEvalBeforeCp;
-  if (!notAlreadyWinning && !(b.allowWhenWinningIfMate && ev.moverMatesAfter)) return false;
+  const alreadyDecided = ev.winProbBefore > b.maxWinProbBefore;
+  if (alreadyDecided && !(b.allowWhenWinningIfMate && ev.moverMatesAfter)) return false;
   if (ev.winProbAfter < b.minWinProbAfter) return false;
   if (b.excludeMateInOne && ev.deliversMate) return false;
   return true;
 }
 
-/** Rule 4: the only good move, found in a position that was still in the balance. */
+/**
+ * Rule 4: the only good move, found in a position that was still in the balance. Obvious captures
+ * (recaptures, taking a hanging piece) are never great.
+ */
 export function isGreat(ev: MoveEvaluation, t: Thresholds): boolean {
   const g = t.great;
   if (ev.winProbLoss > g.maxLossFromBest || !ev.isBest) return false;
+  if (g.excludeRecaptures && ev.isRecapture) return false;
+  if (g.excludeFreeCaptures && ev.capture.isCapture && ev.capture.gain > 0) return false;
   if (ev.winProbSecondBest === undefined) return false;
   if (ev.winProbBefore - ev.winProbSecondBest < g.minGapToSecondBest) return false;
   if (ev.winProbBefore < g.minWinProbBefore || ev.winProbBefore > g.maxWinProbBefore) return false;
@@ -178,7 +208,7 @@ export function classifyMove(ctx: MoveContext, t: Thresholds): ClassificationDet
   else if (isMiss(ev, t)) classification = 'miss';
   else classification = bandFor(ev, t);
 
-  return {
+  const detail: ClassificationDetail = {
     classification,
     winProbBefore: ev.winProbBefore,
     winProbAfter: ev.winProbAfter,
@@ -187,4 +217,6 @@ export function classifyMove(ctx: MoveContext, t: Thresholds): ClassificationDet
     isBest: ev.isBest,
     isSacrifice: ev.sacrifice.isSacrifice,
   };
+  if (ev.sacrifice.isSacrifice) detail.sacrificeValue = ev.sacrifice.grossValue;
+  return detail;
 }

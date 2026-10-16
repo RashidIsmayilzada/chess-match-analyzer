@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Chess } from 'chess.js';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_THRESHOLDS, type Thresholds } from '../config/thresholds.js';
 import type { EngineLine, EngineScore, PositionAnalysis } from '../types.js';
 import { classifyMove, type MoveContext } from './index.js';
 import { cpToWinProb } from './winprob.js';
+import { parsePgn, type ParsedMove } from '../pgn/index.js';
 
 const t = DEFAULT_THRESHOLDS;
 const k = t.winProb.k;
@@ -27,6 +30,29 @@ const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
 const AFTER_E4_E5 = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2';
 const AFTER_E4_C5 = 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2';
+
+/** FEN after playing `sans` from the start position. */
+function fenFromSan(sans: string[]): string {
+  const c = new Chess();
+  for (const san of sans) c.move(san);
+  return c.fen();
+}
+
+/** A neutral previous move (no capture, nothing lost), for tests that do not care about it. */
+const QUIET_PREVIOUS: NonNullable<MoveContext['previous']> = {
+  winProbLoss: 0,
+  winProbBefore: 0.5,
+  winProbAfter: 0.5,
+  uci: 'a7a6',
+  san: 'a6',
+  isCapture: false,
+  toSquare: 'a6',
+};
+
+/** `previous` for the miss tests: the opponent's move lost `winProbLoss`. */
+function prevWithLoss(winProbLoss: number, winProbBefore = 0.6): NonNullable<MoveContext['previous']> {
+  return { ...QUIET_PREVIOUS, winProbLoss, winProbBefore, winProbAfter: winProbBefore - winProbLoss };
+}
 
 function fenAfter(fen: string, uci: string): string {
   const c = new Chess(fen);
@@ -321,18 +347,28 @@ describe('classifyMove: brilliant', () => {
     expect(classifyMove(greekCtx(), withThresholds({ brilliant: { minSacrificeValue: 3 } })).classification).toBe('best');
   });
 
-  it('is not brilliant when the mover was already winning by more than maxEvalBeforeCp', () => {
+  it('is not brilliant when the game was already decided (winProbBefore > maxWinProbBefore)', () => {
     const d = classifyMove(legalCtx({
-      position: pos(LEGAL_BEFORE, [[cp(500), ['f3e5']], [cp(400), ['h2h3']]]),
-      positionAfter: pos(LEGAL_AFTER, [[cp(490), ['d6e5']]]),
+      position: pos(LEGAL_BEFORE, [[cp(1000), ['f3e5']], [cp(900), ['h2h3']]]),
+      positionAfter: pos(LEGAL_AFTER, [[cp(990), ['d6e5']]]),
     }), t);
+    expect(d.winProbBefore).toBeGreaterThan(t.brilliant.maxWinProbBefore);
     expect(d.isSacrifice).toBe(true);
     expect(d.classification).toBe('best');
   });
 
-  it('is brilliant when already winning if the sacrifice leads to forced mate (allowWhenWinningIfMate)', () => {
-    const ctx = legalCtx({
+  it('is still brilliant from a clearly better (+5) but not decided position', () => {
+    const d = classifyMove(legalCtx({
       position: pos(LEGAL_BEFORE, [[cp(500), ['f3e5']], [cp(400), ['h2h3']]]),
+      positionAfter: pos(LEGAL_AFTER, [[cp(490), ['d6e5']]]),
+    }), t);
+    expect(d.winProbBefore).toBeLessThanOrEqual(t.brilliant.maxWinProbBefore);
+    expect(d.classification).toBe('brilliant');
+  });
+
+  it('is brilliant when already decided if the sacrifice leads to forced mate (allowWhenWinningIfMate)', () => {
+    const ctx = legalCtx({
+      position: pos(LEGAL_BEFORE, [[cp(1000), ['f3e5']], [cp(900), ['h2h3']]]),
       positionAfter: pos(LEGAL_AFTER, [[mate(3), ['g4d1', 'c4f7', 'e8e7', 'c3d5']]]),
     });
     expect(classifyMove(ctx, t).classification).toBe('brilliant');
@@ -341,7 +377,7 @@ describe('classifyMove: brilliant', () => {
 
   it('is not brilliant when the mate after the move is for the opponent', () => {
     const d = classifyMove(legalCtx({
-      position: pos(LEGAL_BEFORE, [[cp(500), ['h2h3']], [cp(400), ['f3e5']]]),
+      position: pos(LEGAL_BEFORE, [[cp(1000), ['h2h3']], [cp(900), ['f3e5']]]),
       positionAfter: pos(LEGAL_AFTER, [[mate(-3), ['d6e5']]]),
     }), t);
     expect(d.isSacrifice).toBe(true);
@@ -624,7 +660,7 @@ describe('classifyMove: great', () => {
 });
 
 describe('classifyMove: miss', () => {
-  const previous = { winProbLoss: 0.3, winProbBefore: 0.6, winProbAfter: 0.3 };
+  const previous = prevWithLoss(0.3);
 
   it('awards miss when the opponent blundered 0.3 and the mover gave back 0.2', () => {
     const d = classifyMove(whiteWithLoss(0.19, { previous }), t);
@@ -636,6 +672,20 @@ describe('classifyMove: miss', () => {
     expect(d.classification).toBe('good');
   });
 
+  it('an inaccuracy is never a miss: own loss 0.071 after the opponent lost 0.103', () => {
+    const d = classifyMove(whiteWithLoss(0.071, { previous: prevWithLoss(0.103) }), t);
+    expect(d.classification).toBe('inaccuracy');
+  });
+
+  it('a mistake-sized give-back is a miss: own loss 0.15 after the opponent lost 0.25', () => {
+    const d = classifyMove(whiteWithLoss(0.15, { previous: prevWithLoss(0.25) }), t);
+    expect(d.classification).toBe('miss');
+  });
+
+  it('minOwnLoss defaults to the inaccuracy band edge (the move must be at least a mistake)', () => {
+    expect(t.miss.minOwnLoss).toBe(t.bands.inaccuracy);
+  });
+
   it('is not a miss when the give-back fraction is too small', () => {
     // 0.09 / 0.3 = 0.3 < 0.5
     const d = classifyMove(whiteWithLoss(0.09, { previous }), t);
@@ -643,7 +693,7 @@ describe('classifyMove: miss', () => {
   });
 
   it('is not a miss when the opponent did not blunder enough', () => {
-    const d = classifyMove(whiteWithLoss(0.07, { previous: { winProbLoss: 0.08, winProbBefore: 0.5, winProbAfter: 0.42 } }), t);
+    const d = classifyMove(whiteWithLoss(0.07, { previous: prevWithLoss(0.08, 0.5) }), t);
     expect(d.classification).toBe('inaccuracy');
   });
 
@@ -670,3 +720,195 @@ describe('classifyMove: miss', () => {
     expect(d.classification).toBe('miss');
   });
 });
+
+// Levitsky - Marshall, Breslau 1912, after 22.Rc5: 23...Qg3!!
+const MARSHALL_BEFORE = '5rk1/pp4pp/4p3/2R3Q1/3n4/2q4r/P1P2PPP/5RK1 b - - 0 23';
+const MARSHALL_AFTER = fenAfter(MARSHALL_BEFORE, 'c3g3');
+
+function marshallCtx(bestCp = -760): MoveContext {
+  return {
+    ply: 46,
+    color: 'b',
+    san: 'Qg3',
+    uci: 'c3g3',
+    fenBefore: MARSHALL_BEFORE,
+    fenAfter: MARSHALL_AFTER,
+    position: pos(MARSHALL_BEFORE, [
+      [cp(bestCp), ['c3g3']],
+      [cp(-708), ['c3b4']],
+      [cp(-708), ['c3a3']],
+    ]),
+    positionAfter: pos(MARSHALL_AFTER, [
+      [cp(-782), ['g5g3']],
+      [mate(-7), ['g5g7']],
+      [mate(-2), ['g5f4']],
+    ]),
+    isBook: false,
+    legalMoveCount: new Chess(MARSHALL_BEFORE).moves().length,
+    previous: { ...QUIET_PREVIOUS, uci: 'c1c5', san: 'Rc5', toSquare: 'c5' },
+  };
+}
+
+describe('classifyMove: brilliant (win-probability gate)', () => {
+  it("Marshall's 23...Qg3!! from about +7.6 for black is brilliant", () => {
+    const d = classifyMove(marshallCtx(), t);
+    expect(d.winProbBefore).toBeGreaterThan(0.9);
+    expect(d.winProbBefore).toBeLessThanOrEqual(t.brilliant.maxWinProbBefore);
+    expect(d.isSacrifice).toBe(true);
+    expect(d.sacrificeValue).toBe(9);
+    expect(d.classification).toBe('brilliant');
+  });
+
+  it('the same queen offer from a decided position (-15.00, winProb > 0.95) is only best', () => {
+    const d = classifyMove(marshallCtx(-1500), t);
+    expect(d.winProbBefore).toBeGreaterThan(t.brilliant.maxWinProbBefore);
+    expect(d.classification).toBe('best');
+  });
+
+  it('Greek gift 10.Bxh7+ (Classical French, Steinitz with 7.f4) from +1.50 is brilliant', () => {
+    const sans = ['e4', 'e6', 'd4', 'd5', 'Nc3', 'Nf6', 'Bg5', 'Be7', 'e5', 'Nfd7', 'Bxe7', 'Qxe7', 'f4', 'O-O', 'Nf3', 'c5', 'Bd3', 'cxd4'];
+    const before = fenFromSan(sans);
+    const after = fenAfter(before, 'd3h7');
+    const d = classifyMove({
+      ply: 19,
+      color: 'w',
+      san: 'Bxh7+',
+      uci: 'd3h7',
+      fenBefore: before,
+      fenAfter: after,
+      position: pos(before, [[cp(150), ['d3h7', 'g8h7', 'f3g5']], [cp(40), ['f3d4']]]),
+      positionAfter: pos(after, [[cp(200), ['g8h7', 'f3g5']]]),
+      isBook: false,
+      legalMoveCount: new Chess(before).moves().length,
+      previous: { ...QUIET_PREVIOUS, uci: 'c5d4', san: 'cxd4', isCapture: true, toSquare: 'd4' },
+    }, t);
+    expect(d.isSacrifice).toBe(true);
+    expect(d.classification).toBe('brilliant');
+  });
+
+  it('the Evans gambit 4.b4 offers only a pawn: not brilliant', () => {
+    const before = fenFromSan(['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Bc5']);
+    const after = fenAfter(before, 'b2b4');
+    const d = classifyMove({
+      ply: 7,
+      color: 'w',
+      san: 'b4',
+      uci: 'b2b4',
+      fenBefore: before,
+      fenAfter: after,
+      position: pos(before, [[cp(30), ['b2b4', 'c5b4']], [cp(25), ['c2c3']]]),
+      positionAfter: pos(after, [[cp(30), ['c5b4']]]),
+      isBook: false,
+      legalMoveCount: new Chess(before).moves().length,
+      previous: { ...QUIET_PREVIOUS, uci: 'f8c5', san: 'Bc5', toSquare: 'c5' },
+    }, t);
+    expect(d.isSacrifice).toBe(true);
+    expect(d.sacrificeValue).toBe(1);
+    expect(d.classification).toBe('best');
+  });
+});
+
+const GAME1 = parsePgn(readFileSync(fileURLToPath(new URL('../../../../data/fixtures/game1.pgn', import.meta.url)), 'utf8'));
+
+function game1Move(ply: number): ParsedMove {
+  const m = GAME1.moves[ply - 1];
+  if (!m) throw new Error(`game1 has no ply ${ply}`);
+  return m;
+}
+
+/** Context for a game1 move with hand-written engine lines (white POV cp: [uci, cp] pairs). */
+function game1Ctx(ply: number, lines: Array<[string, number]>): MoveContext {
+  const m = game1Move(ply);
+  const p = game1Move(ply - 1);
+  const played = lines.find(([uci]) => uci === m.uci);
+  if (!played) throw new Error('the played move must be one of the lines');
+  return {
+    ply,
+    color: m.color,
+    san: m.san,
+    uci: m.uci,
+    fenBefore: m.fenBefore,
+    fenAfter: m.fenAfter,
+    position: pos(m.fenBefore, lines.map(([uci, v]) => [cp(v), [uci]])),
+    positionAfter: pos(m.fenAfter, [[cp(played[1]), []]]),
+    isBook: false,
+    legalMoveCount: new Chess(m.fenBefore).moves().length,
+    previous: {
+      winProbLoss: 0,
+      winProbBefore: 0.5,
+      winProbAfter: 0.5,
+      uci: p.uci,
+      san: p.san,
+      isCapture: p.san.includes('x'),
+      toSquare: p.uci.slice(2, 4),
+    },
+  };
+}
+
+describe('classifyMove: great excludes recaptures and free captures', () => {
+  const PLY29: Array<[string, number]> = [['d1d2', 341], ['c1d2', -145]];
+  const PLY50: Array<[string, number]> = [['d7f5', -514], ['g6f5', 527]];
+  const PLY69: Array<[string, number]> = [['d2e2', 428], ['d1b1', -593]];
+
+  it('the fixture plies are what the tests claim', () => {
+    expect([game1Move(28).san, game1Move(29).san, game1Move(50).san, game1Move(69).san]).toEqual(['Qxd2+', 'Rxd2', 'Bxf5', 'Kxe2']);
+  });
+
+  it('game1 ply 29 Rxd2 (recapturing the queen after 14...Qxd2+) is not great', () => {
+    const ctx = game1Ctx(29, PLY29);
+    expect(classifyMove(ctx, t).classification).toBe('best');
+    // Both exclusions apply: the queen was also simply hanging.
+    expect(classifyMove(ctx, withThresholds({ great: { excludeRecaptures: false } })).classification).toBe('best');
+    expect(classifyMove(ctx, withThresholds({ great: { excludeFreeCaptures: false } })).classification).toBe('best');
+    expect(classifyMove(ctx, withThresholds({ great: { excludeRecaptures: false, excludeFreeCaptures: false } })).classification).toBe('great');
+  });
+
+  it('game1 ply 50 Bxf5 (taking an undefended knight) is not great', () => {
+    const ctx = game1Ctx(50, PLY50);
+    expect(classifyMove(ctx, t).classification).toBe('best');
+    expect(classifyMove(ctx, withThresholds({ great: { excludeFreeCaptures: false } })).classification).toBe('great');
+  });
+
+  it('game1 ply 50 Bxf5 is not brilliant either: a free capture offers nothing', () => {
+    const d = classifyMove(game1Ctx(50, PLY50), t);
+    expect(d.isSacrifice).toBe(false);
+    expect(d.classification).not.toBe('brilliant');
+  });
+
+  it('game1 ply 69 Kxe2 (taking a hanging bishop) is not great', () => {
+    const ctx = game1Ctx(69, PLY69);
+    expect(classifyMove(ctx, t).classification).toBe('best');
+    expect(classifyMove(ctx, withThresholds({ great: { excludeFreeCaptures: false } })).classification).toBe('great');
+  });
+
+  it('a recapture is only excluded on the square the opponent just captured on', () => {
+    // Ply 69 Kxe2 with a made-up previous capture on another square: still a free capture, so
+    // only the recapture flag is under test here.
+    const ctx = { ...game1Ctx(69, PLY69), previous: { ...QUIET_PREVIOUS, isCapture: true, toSquare: 'd6' } };
+    expect(classifyMove(ctx, withThresholds({ great: { excludeFreeCaptures: false } })).classification).toBe('great');
+    const onSquare = { ...ctx, previous: { ...ctx.previous, toSquare: 'e2' } };
+    expect(classifyMove(onSquare, withThresholds({ great: { excludeFreeCaptures: false } })).classification).toBe('best');
+  });
+
+  it('a genuine only-move that is not a capture is still great (Kh2, the only move that avoids mate)', () => {
+    // Back-rank check: Kh2 holds, the bishop blocks Bf1 / Bd1 lose to a mating attack.
+    const before = '6k1/5ppp/8/8/8/8/4BPP1/r5K1 w - - 0 1';
+    const after = fenAfter(before, 'g1h2');
+    const d = classifyMove({
+      ply: 61,
+      color: 'w',
+      san: 'Kh2',
+      uci: 'g1h2',
+      fenBefore: before,
+      fenAfter: after,
+      position: pos(before, [[cp(0), ['g1h2']], [mate(-2), ['e2f1']], [mate(-2), ['e2d1']]]),
+      positionAfter: pos(after, [[cp(0), ['a1a2']]]),
+      isBook: false,
+      legalMoveCount: new Chess(before).moves().length,
+      previous: { ...QUIET_PREVIOUS, uci: 'a8a1', san: 'Ra1+', toSquare: 'a1' },
+    }, t);
+    expect(new Chess(before).moves().length).toBe(3);
+    expect(d.classification).toBe('great');
+  });
+});
+

@@ -376,6 +376,7 @@ describe('analyzeGame moves', () => {
         cpLoss: ctx.ply === 1 ? 7 : 0,
         isBest: ctx.ply !== 1,
         isSacrifice: ctx.ply === 2,
+        ...(ctx.ply === 2 ? { sacrificeValue: 3 } : {}),
       }),
     );
 
@@ -400,7 +401,15 @@ describe('analyzeGame moves', () => {
 
     // Ply 2 sees ply 1's detail as `previous`.
     const ctx2 = classifyMock.mock.calls[1]![0];
-    expect(ctx2.previous).toEqual({ winProbLoss: 0.03, winProbBefore: 0.55, winProbAfter: 0.52 });
+    expect(ctx2.previous).toEqual({
+      winProbLoss: 0.03,
+      winProbBefore: 0.55,
+      winProbAfter: 0.52,
+      uci: 'g1f3',
+      san: 'Nf3',
+      isCapture: false,
+      toSquare: 'f3',
+    });
     expect(ctx2.position).toEqual(afterNf3Analysis);
 
     // MoveAnalysis for ply 1.
@@ -424,6 +433,7 @@ describe('analyzeGame moves', () => {
     });
     expect(m1.position).toEqual(startAnalysis);
     expect(m1.isSacrifice).toBeUndefined();
+    expect(m1.sacrificeValue).toBeUndefined();
 
     // Ply 2: single engine line -> no secondBest; sacrifice flag copied from the classifier.
     const m2 = result.moves[1]!;
@@ -431,7 +441,16 @@ describe('analyzeGame moves', () => {
     expect(m2.bestLine).toEqual(['d5']);
     expect(m2.secondBest).toBeUndefined();
     expect(m2.isSacrifice).toBe(true);
+    expect(m2.sacrificeValue).toBe(3);
     expect(m2.clockSeconds).toBe(599);
+  });
+
+  it('passes the previous move as a capture with its destination square (recapture detection)', async () => {
+    parsePgnMock.mockReturnValue(makeGame(['e4', 'd5', 'exd5', 'Qxd5']));
+    await analyzeGame(baseOptions({ book: makeBook(0) as unknown as OpeningBook }));
+    const previousOf = (ply: number) => classifyMock.mock.calls[ply - 1]![0].previous;
+    expect(previousOf(3)).toMatchObject({ uci: 'd7d5', san: 'd5', isCapture: false, toSquare: 'd5' });
+    expect(previousOf(4)).toMatchObject({ uci: 'e4d5', san: 'exd5', isCapture: true, toSquare: 'd5' });
   });
 
   it('truncates a best line at the first illegal continuation', async () => {

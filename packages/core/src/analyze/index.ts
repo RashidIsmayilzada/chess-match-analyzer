@@ -132,6 +132,15 @@ function pvToSan(fen: string, pv: readonly string[]): string[] {
   return sans;
 }
 
+/** True when `uci` captures in `fen` (en passant included). */
+function isCaptureMove(fen: string, uci: string): boolean {
+  try {
+    return new Chess(fen).move(uciToMoveObject(uci)).captured !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 function legalMoveCount(fen: string): number {
   return new Chess(fen).moves().length;
 }
@@ -363,6 +372,7 @@ function buildMoveAnalysis(
   if (second && secondMove) analysis.secondBest = { move: secondMove, score: second.score };
   if (isBook && opening) analysis.opening = opening;
   if (detail.isSacrifice) analysis.isSacrifice = true;
+  if (detail.sacrificeValue !== undefined) analysis.sacrificeValue = detail.sacrificeValue;
   if (move.clockSeconds !== undefined) analysis.clockSeconds = move.clockSeconds;
   return analysis;
 }
@@ -414,6 +424,10 @@ function walkMoves(
       winProbLoss: detail.winProbLoss,
       winProbBefore: detail.winProbBefore,
       winProbAfter: detail.winProbAfter,
+      uci: move.uci,
+      san: move.san,
+      isCapture: isCaptureMove(move.fenBefore, move.uci),
+      toSquare: move.uci.slice(2, 4),
     };
   }
 
