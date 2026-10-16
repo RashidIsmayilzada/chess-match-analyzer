@@ -31,14 +31,14 @@ Entry: `src/index.ts` re-exports everything public.
 |---|---|---|
 | types | `src/types.ts` | Shared domain types (DO NOT change shapes without updating all consumers). |
 | thresholds | `src/config/thresholds.ts` | Every tunable constant. `DEFAULT_THRESHOLDS`, `PIECE_VALUES`. |
-| engine | `src/engine/uci.ts` | `UciEngine` class: spawn a UCI binary, set options, `analyse(fen, settings) => PositionAnalysis`. Scores normalised to white POV. Serialises concurrent calls (one search at a time). |
+| engine | `src/engine/uci.ts` | `UciEngine` class: spawn a UCI binary, set options, `analyse(fen, settings) => PositionAnalysis`. Scores normalised to white POV. Serialises concurrent calls (one search at a time). Terminal positions (checkmate / stalemate) return `lines: []`. `PositionAnalysis.depth` is the depth actually reached. |
 | openings | `src/openings/index.ts` | `OpeningBook`: loads the TSVs, `lookupByMoves(sanMoves[]) => OpeningRef | undefined`, `isBookMove(sanMovesSoFar, san)`, `longestMatch(sanMoves[]) => { opening, plies }`, `search(query)` and `list()` for the Openings browser. Also `loadDefaultBook(dataDir)`. |
 | winprob | `src/classify/winprob.ts` | `cpToWinProb(cp, k)`, `scoreToWinProb(score: EngineScore, color: Color, t)` (mover POV), `scoreToCp(score, mateCp)`, `scoreFromMoverPov`. |
 | sacrifice | `src/classify/sacrifice.ts` | `detectSacrifice(fenBefore, uci) => { isSacrifice, value }`: net material the mover leaves en prise after the move that cannot be recouped by a simple recapture (SEE-style). |
 | classify | `src/classify/index.ts` | `classifyMove(ctx: MoveContext, t: Thresholds) => Classification` plus helpers per rule (`isBrilliant`, `isGreat`, `isMiss`, `bandFor`). |
 | accuracy | `src/classify/accuracy.ts` | `moveAccuracy(winProbLoss, t)`, `gameAccuracy(moves, color, t)`, `estimateRating(avgCpLoss, timeClass, t)`. |
 | pgn | `src/pgn/index.ts` | `parsePgn(pgn) => { headers, moves: {san, uci, fenBefore, fenAfter, clockSeconds?}[] }` using chess.js. Handles chess.com `{[%clk ...]}` comments. |
-| analyze | `src/analyze/index.ts` | `analyzeGame({ pgn, timeClass, engine, book, settings, thresholds, onProgress }) => GameAnalysis`. Orchestrates: parse → analyse every position (with a `PositionCache` interface for memoisation) → classify → summarise → key moments. |
+| analyze | `src/analyze/index.ts` | `analyzeGame({ pgn, timeClass, engine, book, settings, thresholds, onProgress }) => GameAnalysis`. Orchestrates: parse → analyse every position (with a `PositionCache` interface for memoisation) → classify → summarise → key moments. Engine results are normalised to the REQUESTED depth before caching (`cache.get` is keyed by the requested settings). Positions with exactly one legal move are never sent to the engine (Stockfish answers them with a meaningless `cp 0`): their eval is derived from the position after the forced move (`deriveForcedMoveAnalysis`). |
 
 `MoveContext` (input to `classifyMove`):
 
@@ -63,13 +63,15 @@ Order of evaluation: **book → brilliant → great → miss → bands**.
 2. Compute `winProbBefore` = mover's win prob of best line in `position` (i.e. the eval of the
    position before the move), `winProbAfter` = mover's win prob of best line in `positionAfter`,
    `loss = max(0, winProbBefore - winProbAfter)`.
-   `isBest` = the played uci equals `position.lines[0].pv[0]`, OR the eval after equals the
-   best line's eval exactly (same cp / same mate distance).
+   `isBest` = the played uci equals `position.lines[0].pv[0]`, OR the eval after is at least as
+   good for the mover as the best line's eval (cp and mate distances compared through
+   `scoreToCp`, so mate-in-3 followed by mate-in-2 counts as equal).
 3. **brilliant** — all of:
    - `loss <= brilliant.maxLossFromBest`
-   - `detectSacrifice(fenBefore, uci).value >= brilliant.minSacrificeValue` (sacrificed material
-     is at least a minor piece; the moving piece type does not matter, a pawn capture that
-     leaves a rook hanging counts).
+   - `detectSacrifice(fenBefore, uci).value >= brilliant.minSacrificeValue`. The value is NET:
+     SEE loss minus the material the move itself captures, so the Greek gift Bxh7+ Kxh7 nets
+     3 - 1 = 2 and an exchange sacrifice nets 2; the default minimum is 2. The moving piece type
+     does not matter: a pawn capture that leaves a rook hanging counts.
    - mover's cp eval before the move `<= brilliant.maxEvalBeforeCp`, OR
      (`allowWhenWinningIfMate` and `positionAfter` best line is a mate for the mover).
    - `winProbAfter >= brilliant.minWinProbAfter`.
@@ -88,6 +90,10 @@ Order of evaluation: **book → brilliant → great → miss → bands**.
 
 Accuracy per move (Lichess): `a * exp(b * (loss * 100)) + c`, clamped 0..100.
 Game accuracy per player = mean of per-move accuracies for that colour, book moves count as 100.
+Centipawn loss per move = `max(0, clamp(cpBefore) - clamp(cpAfter))` with both mover-POV evals
+clamped to `+-rating.evalClampCp` (mate scores converted through `winProb.mateCp` first), so
+eval noise in decisive positions does not inflate the average.
+`averageCpLoss` = mean cpLoss over the player's non-book moves.
 Estimated rating = `clamp(base - slope * averageCpLoss, min, max)` per time class.
 
 Key moments: plies classified brilliant, great, miss, blunder, plus any ply whose
@@ -114,7 +120,9 @@ Schema in `src/db/schema.ts`, migrations applied programmatically at startup
 | settings | key (pk), value_json |
 | jobs | id (pk), kind ('import' | 'analysis'), payload_json, status, progress, error, created_at, started_at, finished_at |
 
-Settings stored: `analysis` → `AnalysisSettings`, `thresholds` → `Thresholds` (optional overrides).
+Settings stored: `analysis` → `AnalysisSettings`, `thresholds` → `Thresholds` (optional overrides),
+`engineNames` → engine name per binary path (remembered after the first start so the settings key
+is known before the engine runs).
 Defaults: depth 18, multiPv 3, threads 8, hashMb 512, enginePath `engines/stockfish`.
 
 ### chess.com importer (`src/import/chesscom.ts`)
@@ -132,7 +140,8 @@ Public API, no auth. **Usernames must be lowercased in URLs.** Send a `User-Agen
 
 One worker, one Stockfish process reused across jobs. Jobs persisted in `jobs`. Progress
 events broadcast over SSE. Position cache: `position_analyses` table keyed by
-(fen, depth, multipv, engine). Cancelling a running job stops the engine search (`stop`).
+(fen, depth, multipv, engine) where depth is the REQUESTED depth. Cancelling a running job
+stops the engine search (`stop`). Running jobs found at boot are re-queued.
 
 ### HTTP API (all JSON, prefix `/api`)
 
@@ -141,18 +150,25 @@ events broadcast over SSE. Position cache: `position_analyses` table keyed by
 | GET | /profiles | | `Profile[]` |
 | POST | /import | `{ username, mode: 'all'|'latest', count?: number, autoAnalyzeLatest?: number }` | `{ jobId }` |
 | GET | /import/:jobId | | `ImportJob` |
-| GET | /games | `?profile=&timeClass=&analyzed=&page=&pageSize=` | `{ items: GameRecord[], total }` |
+| GET | /games | `?profile=&timeClass=&analyzed=&page=&pageSize=` | `{ items: GameRecord[], total }` (analysed rows carry `accuracy: { white, black }`) |
 | GET | /games/:id | | `{ game: GameRecord, analysis?: GameAnalysis }` |
 | POST | /games/:id/analyze | | `{ jobId }` |
 | POST | /analyze/batch | `{ gameIds: string[] }` | `{ jobIds: string[] }` |
-| GET | /jobs | `?status=` | `AnalysisJob[]` |
+| GET | /jobs | `?status=&kind=` | `AnalysisJob[]` (default `kind=analysis`); `kind=import` → `ImportJob[]` |
 | DELETE | /jobs/:id | | cancel |
 | GET | /events | | SSE: `import-progress`, `analysis-progress`, `job-updated` |
 | GET | /settings | | `{ analysis: AnalysisSettings, thresholds: Thresholds }` |
-| PUT | /settings | partial of the above | updated settings |
+| PUT | /settings | deep-partial of the above (`movetimeMs: null` clears it) | updated settings |
+| DELETE | /settings | | reset overrides to defaults |
 | GET | /openings | `?q=` | `{ eco, name, pgn }[]` (max 200) |
 | GET | /openings/:eco | | lines for that ECO |
-| GET | /health | | `{ ok, engine: string }` |
+| GET | /health | | `{ ok, engine: string, queueIdle, sseClients }` (starts the engine lazily) |
+
+SSE payloads (`data:` is JSON):
+
+- `analysis-progress`: `{ jobId, gameId, progress }` with progress 0..1.
+- `import-progress`: `{ jobId, username, status, progress, imported, skipped, archivesFetched?, archivesTotal? }`.
+- `job-updated`: `{ kind: 'import' | 'analysis', job: ImportJob | AnalysisJob }`, emitted on every status change.
 
 ## packages/web
 
