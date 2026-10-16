@@ -55,6 +55,11 @@ export interface EngineLine {
 /** Engine output for one position. Scores are white POV regardless of side to move. */
 export interface PositionAnalysis {
   fen: string;
+  /**
+   * Search depth. The engine reports the deepest depth it actually reached; `analyzeGame`
+   * normalises this to the REQUESTED depth before caching so cache keys match the settings.
+   * Individual lines keep the depth they were reported at.
+   */
   depth: number;
   multipv: number;
   lines: EngineLine[];
@@ -103,7 +108,10 @@ export interface MoveAnalysis {
   winProbAfter: number;
   /** winProbBefore - winProbAfter, clamped at 0. */
   winProbLoss: number;
-  /** Centipawn loss for the mover, clamped at 0. Mate scores are converted with a large constant. */
+  /**
+   * Centipawn loss for the mover, clamped at 0. Mate scores are converted with a large constant
+   * and both evals are clamped to +-thresholds.rating.evalClampCp before subtracting.
+   */
   cpLoss: number;
 
   /** Engine's best move in the position before the move. */
@@ -179,6 +187,8 @@ export interface GameRecord {
   openingName?: string;
   /** True when a GameAnalysis exists for the current settings. */
   analyzed: boolean;
+  /** Per-player accuracy (0..100) of the analysis behind `analyzed`, when one exists. */
+  accuracy?: { white: number; black: number };
 }
 
 export interface Profile {
