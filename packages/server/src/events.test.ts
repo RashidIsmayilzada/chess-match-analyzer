@@ -60,6 +60,34 @@ describe('GET /api/events', () => {
     expect(app.ctx.events.clientCount).toBe(0);
   });
 
+  it('app.close() finishes promptly while an SSE client is still connected', async () => {
+    app = await createTestApp({ startQueue: false, deps: { heartbeatMs: 30 } });
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+
+    const res = await fetch(`${address}/api/events`);
+    const reader = res.body!.getReader();
+    await readUntil(reader, (t) => t.includes(': connected'));
+    expect(app.ctx.events.clientCount).toBe(1);
+
+    const started = Date.now();
+    await app.close();
+    const elapsed = Date.now() - started;
+    app = undefined;
+    expect(elapsed).toBeLessThan(1500);
+
+    // The stream was ended by the server, not by the client: reads drain to done.
+    const deadline = Date.now() + 2000;
+    let done = false;
+    while (!done && Date.now() < deadline) {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stream still open')), deadline - Date.now())),
+      ]);
+      done = chunk.done;
+    }
+    expect(done).toBe(true);
+  });
+
   it('EventHub drops clients on close', () => {
     const hub = new EventHub(0);
     expect(hub.clientCount).toBe(0);

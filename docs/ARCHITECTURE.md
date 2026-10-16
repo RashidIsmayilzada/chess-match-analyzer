@@ -104,7 +104,10 @@ ordered by swing size then ply.
 ## packages/server
 
 Fastify 5 on port 3001, CORS open for the Vite dev server (port 5173). Serves
-`packages/web/dist` statically in production.
+`packages/web/dist` statically in production. Shutdown: a `preClose` hook ends every SSE
+response (Fastify only closes idle sockets and waits for active ones, so this must happen before
+the server closes), then `onClose` stops the queue (requeueing an interrupted job) and closes
+the database; `app.close()` finishes promptly even with EventSource clients connected.
 
 ### Database (Drizzle + better-sqlite3, file `data/chess-analyzer.db`)
 

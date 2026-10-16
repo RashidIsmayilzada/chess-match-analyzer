@@ -97,9 +97,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<App> {
     app.setNotFoundHandler((request, reply) => reply.code(404).send({ error: `Route ${request.method} ${request.url} not found` }));
   }
 
+  // Fastify runs preClose before it closes the HTTP server, which only waits for active sockets
+  // to finish: the open SSE responses must be ended here, or `close()` hangs until every
+  // EventSource client goes away (onClose hooks run only after the server has closed).
+  app.addHook('preClose', async () => {
+    events.close();
+  });
   app.addHook('onClose', async () => {
     await queue.stop();
-    events.close();
     database.close();
   });
 
