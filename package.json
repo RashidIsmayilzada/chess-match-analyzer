@@ -1,0 +1,23 @@
+{
+  "name": "chess-analyzer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/core && npm run build -w packages/server && npm run build -w packages/web",
+    "test": "npm run test -w packages/core && npm run test -w packages/server --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev": "npm run dev -w packages/server & npm run dev -w packages/web & wait",
+    "dev:server": "npm run dev -w packages/server",
+    "dev:web": "npm run dev -w packages/web"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
+  }
+}
