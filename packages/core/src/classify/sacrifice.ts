@@ -22,6 +22,9 @@
  * 4. Subtract the material the move itself won: the captured piece, and for a promotion the gain
  *    from pawn to the promoted piece (a promoted queen that is immediately taken only costs a pawn).
  * 5. `value = max(0, result)`, `isSacrifice = value >= 1` (a pawn is the smallest unit).
+ *    `grossValue` is the material the move offers: the FULL exchange loss on every square reported
+ *    in step 3 (not reduced by what hung there before, nor by step 4). Marshall's 23...Qg3!! offers
+ *    9 (the queen; net 5, because on c3 it already hung for 4), the Greek gift Bxh7+ offers 3 (net 2).
  *
  * SEE (swap-list algorithm, chessprogramming.org "SEE - The Swap Algorithm"): starting with the
  * value of the piece on the square, each side in turn captures with its least valuable attacker,
@@ -41,6 +44,12 @@ export interface SacrificeResult {
   isSacrifice: boolean;
   /** Net material (pawn units) the mover leaves en prise and cannot recoup by recapture. 0 if none. */
   value: number;
+  /**
+   * Gross material (pawn units) the move offers: the full exchange loss on every square where the
+   * move left more material en prise than before, not reduced by what already hung there nor by
+   * what the move captured (9 for Marshall's Qg3, 3 for Bxh7+). 0 if none.
+   */
+  grossValue: number;
   /** Squares of the sacrificed pieces, for display. */
   squares: string[];
 }
@@ -73,9 +82,10 @@ function leastValuableAttacker(board: Chess, square: Square, side: Color): { fro
  * Static exchange evaluation on `square` (which holds a piece of the side opposite to `attacker`),
  * with `attacker` capturing first. Returns the net material, in pawn units, that `attacker` wins
  * when both sides play the exchange optimally (negative when capturing would lose material;
- * 0 when no legal capture exists).
+ * 0 when no legal capture exists). With `firstFrom` the first capture is made by the piece on that
+ * square (the move actually played) instead of the least valuable attacker.
  */
-export function staticExchangeEvaluation(chess: Chess, square: Square, attacker: Color): number {
+export function staticExchangeEvaluation(chess: Chess, square: Square, attacker: Color, firstFrom?: Square): number {
   const target = chess.get(square);
   if (!target || target.color === attacker) return 0;
 
@@ -86,7 +96,8 @@ export function staticExchangeEvaluation(chess: Chess, square: Square, attacker:
   let d = 0;
 
   for (;;) {
-    const next = leastValuableAttacker(board, square, side);
+    const first = d === 0 && firstFrom !== undefined ? board.get(firstFrom) : undefined;
+    const next = first ? { from: firstFrom as Square, type: first.type } : leastValuableAttacker(board, square, side);
     if (!next) break;
     // A king may only capture when the square is no longer attacked by the other side.
     if (next.type === 'k' && board.attackers(square, otherColor(side)).length > 0) break;
@@ -100,7 +111,8 @@ export function staticExchangeEvaluation(chess: Chess, square: Square, attacker:
   while (--d > 0) {
     gain[d - 1] = -Math.max(-(gain[d - 1] as number), gain[d] as number);
   }
-  return gain[0] as number;
+  // `|| 0` normalises -0 (from the negations above) to 0.
+  return (gain[0] as number) || 0;
 }
 
 /**
@@ -160,21 +172,62 @@ export function detectSacrifice(fenBefore: string, uci: string): SacrificeResult
   const capturable = chess.isCheckmate() ? undefined : legalCaptureSquares(chess);
   const after = hangingMaterial(chess, mover, capturable);
 
-  let value = 0;
+  let addedValue = 0;
+  let grossValue = 0;
   const squares: string[] = [];
   for (const [square, lossAfter] of after) {
     const prior = (square === move.to ? before.get(move.from) : before.get(square)) ?? 0;
     const added = lossAfter - prior;
     if (added > 0) {
-      value += added;
+      addedValue += added;
+      grossValue += lossAfter;
       squares.push(square);
     }
   }
 
   const captured = move.captured ? PIECE_VALUES[move.captured] : 0;
   const promotionGain = move.promotion ? PIECE_VALUES[move.promotion] - PIECE_VALUES.p : 0;
-  value = Math.max(0, value - captured - promotionGain);
+  const value = Math.max(0, addedValue - captured - promotionGain);
 
   const isSacrifice = value >= MIN_SACRIFICE_VALUE;
-  return { isSacrifice, value, squares: isSacrifice ? squares : [] };
+  return { isSacrifice, value, grossValue, squares: isSacrifice ? squares : [] };
+}
+
+export interface CaptureExchange {
+  /** The move captures something (en passant included). */
+  isCapture: boolean;
+  /**
+   * Static exchange evaluation for the MOVER on the destination square before the move, with the
+   * moving piece capturing first (pawn units). > 0 means the captured piece was hanging or
+   * under-defended, i.e. taking it simply wins material. 0 for a non-capture.
+   */
+  gain: number;
+}
+
+/**
+ * How much the mover wins by the exchange that `uci` starts on its destination square. Used by
+ * the Great rule (`great.excludeFreeCaptures`): taking a hanging piece is obvious, not great.
+ * En passant is evaluated as if the captured pawn stood on the destination square.
+ */
+export function captureExchange(fenBefore: string, uci: string): CaptureExchange {
+  const m = UCI_RE.exec(uci.trim());
+  if (!m) throw new Error(`captureExchange: invalid UCI move "${uci}"`);
+  const from = m[1] as Square;
+  const to = m[2] as Square;
+  const promotion = m[3] as PieceSymbol | undefined;
+
+  const chess = new Chess(fenBefore);
+  const mover = chess.turn();
+  // Throws on an illegal move, like detectSacrifice.
+  const move = new Chess(fenBefore).move({ from, to, promotion });
+  if (!move.captured) return { isCapture: false, gain: 0 };
+
+  if (move.flags.includes('e')) {
+    const board = new Chess(fenBefore, { skipValidation: true });
+    const capturedSquare = `${to[0]}${from[1]}` as Square;
+    board.remove(capturedSquare);
+    board.put({ type: 'p', color: otherColor(mover) }, to);
+    return { isCapture: true, gain: staticExchangeEvaluation(board, to, mover, from) };
+  }
+  return { isCapture: true, gain: staticExchangeEvaluation(chess, to, mover, from) };
 }

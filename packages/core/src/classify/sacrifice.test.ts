@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Chess } from 'chess.js';
-import { detectSacrifice, legalCaptureSquares } from './sacrifice.js';
+import { captureExchange, detectSacrifice, legalCaptureSquares } from './sacrifice.js';
 
 describe('detectSacrifice', () => {
   it('queen moved en prise to an undefended square: value 9', () => {
@@ -141,3 +141,81 @@ describe('detectSacrifice', () => {
     expect(() => detectSacrifice('6k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 1', 'g1g3')).toThrow();
   });
 });
+
+describe('detectSacrifice: grossValue', () => {
+  it('Marshall 23...Qg3!!: the queen is offered on g3, gross 9; net 5 because Rxc3 Rxc3 already won 4', () => {
+    // 22.Rc5 attacked the queen on c3 (defended once by Rh3: SEE 9 - 5 = 4 for white). On g3 it
+    // hangs outright to three captures (SEE 9), so the move adds 9 - 4 = 5 of new material.
+    const fen = '5rk1/pp4pp/4p3/2R3Q1/3n4/2q4r/P1P2PPP/5RK1 b - - 0 23';
+    const r = detectSacrifice(fen, 'c3g3');
+    expect(r.grossValue).toBe(9);
+    expect(r.value).toBe(5);
+    expect(r.isSacrifice).toBe(true);
+  });
+
+  it('Greek gift Bxh7+: gross 3 (the bishop), net 2 (minus the h7 pawn)', () => {
+    const r = detectSacrifice('rnb2rk1/pp1nqppp/4p3/2ppP3/3P4/2NB1N2/PPP2PPP/R2QK2R w KQ - 0 9', 'd3h7');
+    expect(r.grossValue).toBe(3);
+    expect(r.value).toBe(2);
+  });
+
+  it('Legal-style Nxe5: gross 9 (knight 3 + queen 6 net of Kxd1), net 8', () => {
+    const r = detectSacrifice('rn1qkbnr/ppp2p1p/3p2p1/4p3/2B1P1b1/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 0 5', 'f3e5');
+    expect(r.grossValue).toBe(9);
+    expect(r.value).toBe(8);
+  });
+
+  it('exchange sac Rxc3 bxc3: gross 5 (the rook), net 2 (minus the knight)', () => {
+    const r = detectSacrifice('2r3k1/5ppp/8/8/8/2N5/1P3PPP/4R1K1 b - - 0 1', 'c8c3');
+    expect(r.grossValue).toBe(5);
+    expect(r.value).toBe(2);
+  });
+
+  it('a quiet safe move: gross 0', () => {
+    const r = detectSacrifice('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 'e2e4');
+    expect(r.grossValue).toBe(0);
+    expect(r.value).toBe(0);
+  });
+});
+
+describe('captureExchange', () => {
+  it('a non-capture: isCapture false, gain 0', () => {
+    expect(captureExchange('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 'e2e4')).toEqual({ isCapture: false, gain: 0 });
+  });
+
+  it('taking an undefended bishop with the king: gain 3 (game1 ply 69 Kxe2)', () => {
+    expect(captureExchange('6k1/3r1p1p/3P2p1/p7/6P1/5P1P/P2Kb3/3R4 w - - 3 35', 'd2e2')).toEqual({ isCapture: true, gain: 3 });
+  });
+
+  it('taking a knight attacked twice and defended by nothing: gain 3 (game1 ply 50 Bxf5)', () => {
+    expect(captureExchange('6k1/1rpb1p1p/6p1/p4N2/7r/1PP2P1P/P2R2P1/2KR4 b - - 1 25', 'd7f5')).toEqual({ isCapture: true, gain: 3 });
+  });
+
+  it('an even trade of defended pieces: gain 0', () => {
+    // Nd4xe6 takes a knight on e6 defended by the f7 pawn: 3 - 3 = 0.
+    const r = captureExchange('6k1/5p2/4n3/8/3N4/8/8/6K1 w - - 0 1', 'd4e6');
+    expect(r).toEqual({ isCapture: true, gain: 0 });
+  });
+
+  it('a capture that loses material on the exchange: negative gain', () => {
+    // Qd1xd7 takes a pawn defended by the e8 king... the queen is lost for a pawn: 1 - 9 = -8.
+    const r = captureExchange('4k3/3p4/8/8/8/8/8/3QK3 w - - 0 1', 'd1d7');
+    expect(r.isCapture).toBe(true);
+    expect(r.gain).toBe(-8);
+  });
+
+  it('the gain is computed with the moving piece capturing first, not the cheapest attacker', () => {
+    // Knight on d5 defended by the e6 pawn, attacked by the c4 pawn and the d1 queen.
+    const fen = '6k1/8/4p3/3n4/2P5/8/8/3QK3 w - - 0 1';
+    expect(captureExchange(fen, 'c4d5')).toEqual({ isCapture: true, gain: 3 });
+    expect(captureExchange(fen, 'd1d5').gain).toBeLessThan(0);
+  });
+
+  it('en passant counts as a capture of a pawn, gain from the exchange on the destination', () => {
+    // exd6 e.p. with nothing defending: the pawn is simply won.
+    const r = captureExchange('4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2', 'e5d6');
+    expect(r.isCapture).toBe(true);
+    expect(r.gain).toBe(1);
+  });
+});
+
